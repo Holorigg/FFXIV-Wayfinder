@@ -13,7 +13,9 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 
 namespace Wayfinder;
@@ -28,6 +30,14 @@ public sealed class Plugin : IDalamudPlugin
     private const float AtShardDistance = 10f;
     // Rough yalms for the walk on the far side of a zone line, which cannot be measured from here.
     private const float CrossZoneAllowance = 150f;
+    private const float AtNpcDistance = 6f;
+    // A quest spot counts as visited once the player has stood this close to it.
+    private const float VisitedDistance = 4f;
+    // Rough yalms per second: running, and a mount before its speed is upgraded.
+    private const float RunSpeed = 6f;
+    private const float MountSpeed = 9f;
+    // A fare is worth a short walk: paid transports are compared as if this many yalms longer.
+    private const float FarePenalty = 30f;
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
     [PluginService] private static ICommandManager CommandManager { get; set; } = null!;
@@ -48,6 +58,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Teleports teleports;
     private readonly Aethernet aethernet;
     private readonly Landmarks landmarks;
+    private readonly AetherCurrents currents;
+    private readonly MinimapOverlay minimap;
 
     private readonly ICallGateSubscriber<bool> navReady;
     private readonly ICallGateSubscriber<Vector3?> flagToPoint;
@@ -68,23 +80,40 @@ public sealed class Plugin : IDalamudPlugin
     // Written from pathfind continuations on worker threads too.
     private readonly ConcurrentDictionary<string, string> lastTrace = new();
     private ZoneExit? currentExit;
+    // Whether the last path was asked for in the air, so a mount/dismount re-plans it.
+    private bool pathFlying;
+    private DateTime nextMapTrace;
+    // Spots of the current quest step already walked to, keyed by quest and step.
+    private (ushort Quest, byte Sequence) visitedKey;
+    private readonly HashSet<int> visited = [];
+    private int chosenSpot = -1;
+    private List<Vector3> otherSpots = [];
 
     public Plugin()
     {
         config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        if (config.Mode == WayMode.LegacyMender)
+        {
+            config.Mode = WayMode.Nearest;
+            config.Place = LandmarkKind.Mender;
+        }
         Loc.Current = config.Language;
         questTargets = new QuestTargets(DataManager);
         teleports = new Teleports(DataManager);
         aethernet = new Aethernet(DataManager);
         landmarks = new Landmarks(DataManager);
-        Log.Information("[Wayfinder] {Boards} market boards, {Menders} menders loaded", landmarks.Count(LandmarkKind.MarketBoard), landmarks.Count(LandmarkKind.Mender));
-        Log.Information("[Wayfinder] {Count} aethernet shards loaded", aethernet.Count);
+        currents = new AetherCurrents(DataManager);
+        Log.Information("[Wayfinder] landmarks: {List}", string.Join(", ", Enum.GetValues<LandmarkKind>().Select(k => $"{k} {landmarks.Count(k)}")));
+        Log.Information("[Wayfinder] {Count} aethernet shards, {Currents} aether currents loaded", aethernet.Count, currents.Count);
         configWindow = new ConfigWindow(config, SaveConfig, this);
         windows.AddWindow(configWindow);
         renderer = new PathRenderer(config);
+        minimap = new MinimapOverlay(config);
 
         links = new ZoneLinks(DataManager);
-        Log.Information("[Wayfinder] zone links loaded for {Count} territories, {Entrances} door entrances", links.Count, links.EntranceCount);
+        links.Usable = CanUse;
+        Log.Information("[Wayfinder] zone links loaded for {Count} territories, {Entrances} door entrances, {Transports} transports",
+            links.Count, links.EntranceCount, links.TransportCount);
 
         navReady = PluginInterface.GetIpcSubscriber<bool>("vnavmesh.Nav.IsReady");
         flagToPoint = PluginInterface.GetIpcSubscriber<Vector3?>("vnavmesh.Query.Mesh.FlagToPoint");
@@ -142,10 +171,37 @@ public sealed class Plugin : IDalamudPlugin
                 config.Enabled = !config.Enabled;
                 break;
             case "market" or "mb":
-                SetMode(WayMode.MarketBoard, config.QuestId);
+                SetPlace(LandmarkKind.MarketBoard);
                 return;
             case "repair" or "mender":
-                SetMode(WayMode.Mender, config.QuestId);
+                SetPlace(LandmarkKind.Mender);
+                return;
+            case "bell":
+                SetPlace(LandmarkKind.SummoningBell);
+                return;
+            case "inn":
+                SetPlace(LandmarkKind.Inn);
+                return;
+            case "mail":
+                SetPlace(LandmarkKind.Mail);
+                return;
+            case "hunt":
+                SetPlace(LandmarkKind.HuntBoard);
+                return;
+            case "chocobo":
+                SetPlace(LandmarkKind.Chocobokeep);
+                return;
+            case "guild":
+                SetPlace(LandmarkKind.Guild);
+                return;
+            case "currents" or "aether":
+                SetMode(WayMode.AetherCurrent, config.QuestId);
+                return;
+            case "skip":
+                SkipSpot();
+                return;
+            case "mapdebug":
+                MapDebug.Dump(msg => Log.Information("[Wayfinder] {Message}", msg));
                 return;
             case "flag":
                 SetMode(WayMode.Flag, config.QuestId);
@@ -187,14 +243,30 @@ public sealed class Plugin : IDalamudPlugin
         Chat.Print($"[Wayfinder] {DescribeMode()}");
     }
 
+    internal void SetPlace(LandmarkKind kind)
+    {
+        config.Place = kind;
+        SetMode(WayMode.Nearest, config.QuestId);
+    }
+
+    // The next spot of a quest step with several targets, for when the player was done with this one from afar.
+    internal void SkipSpot()
+    {
+        if (chosenSpot >= 0)
+            visited.Add(chosenSpot);
+        nextQuery = DateTime.MinValue;
+    }
+
+    internal int SpotsLeft => config.Mode == WayMode.Quest ? otherSpots.Count + (chosenSpot >= 0 ? 1 : 0) : 0;
+
     private string DescribeMode()
     {
         if (config.Mode == WayMode.Flag)
             return Loc.T("chat.flag");
-        if (config.Mode == WayMode.MarketBoard)
-            return Loc.T("chat.market");
-        if (config.Mode == WayMode.Mender)
-            return Loc.T("chat.mender");
+        if (config.Mode == WayMode.Nearest)
+            return Loc.T("chat.nearest", Loc.T($"place.{config.Place}"));
+        if (config.Mode == WayMode.AetherCurrent)
+            return Loc.T("chat.currents");
         if (config.QuestId == 0)
             return SelectedQuest() is { } msq ? Loc.T("chat.msq", msq.Name) : Loc.T("chat.msq-none");
         return SelectedQuest() is { } q ? Loc.T("chat.quest", q.Name) : Loc.T("chat.quest-gone");
@@ -222,7 +294,15 @@ public sealed class Plugin : IDalamudPlugin
     // What to do right now (walk to a shard / pick a destination / head for the exit), then the paid alternative.
     internal string? Step { get; private set; }
 
-    internal string? Hint => string.Join('\n', new[] { Step, TeleportHint }.Where(s => !string.IsNullOrEmpty(s)));
+    // "Get on your mount", when it would help and the player has one.
+    internal string? MountTip { get; private set; }
+
+    internal string? Hint => string.Join('\n', new[] { Step, MountTip, TeleportHint }.Where(s => !string.IsNullOrEmpty(s)));
+
+    // Aether currents of the current zone, for the window.
+    internal CurrentProgress? CurrentsHere => currents.Progress(ClientState.TerritoryType);
+
+    internal string QuestName(uint questRow) => questTargets.NameOfRow(questRow);
 
     internal string CurrentTarget => target != null ? targetLabel : status;
 
@@ -236,6 +316,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         Teleport = null;
         Step = null;
+        MountTip = null;
+        otherSpots = [];
         path = [];
         target = null;
         lastTo = null;
@@ -283,8 +365,53 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        renderer.Draw(from, points, to, targetLabel, Hint, markerLabel);
+        var speed = config.ShowEta ? (Condition[ConditionFlag.Mounted] ? MountSpeed : RunSpeed) : 0f;
+        renderer.Draw(from, points, to, targetLabel, Hint, markerLabel, speed, otherSpots);
+        if (config.ShowOnMinimap)
+        {
+            minimap.Draw(from, points, to, MapSizeFactor());
+            // The figures move with the player; a sample every few seconds is enough to calibrate from.
+            if (minimap.Debug is { } debug && now >= nextMapTrace)
+            {
+                nextMapTrace = now + TimeSpan.FromSeconds(5);
+                Trace(debug, "minimap");
+            }
+        }
     }
+
+    private float MapSizeFactor() =>
+        DataManager.GetExcelSheet<Lumina.Excel.Sheets.TerritoryType>().TryGetRow(ClientState.TerritoryType, out var zone)
+        && zone.Map.ValueNullable is { } map ? map.SizeFactor : 100f;
+
+    private bool ZoneAllowsMount() =>
+        DataManager.GetExcelSheet<Lumina.Excel.Sheets.TerritoryType>().TryGetRow(ClientState.TerritoryType, out var zone) && zone.Mount;
+
+    private static unsafe bool HasMount()
+    {
+        var state = PlayerState.Instance();
+        return state != null && state->NumOwnedMounts > 0;
+    }
+
+    private static unsafe bool CanFlyHere()
+    {
+        var state = PlayerState.Instance();
+        return state != null && state->CanFly;
+    }
+
+    // Transports wait for the quest that opens them (the airship pass) and can be switched off.
+    private bool CanUse(ZoneExit exit)
+    {
+        if (exit.Via is not { } via)
+            return true;
+        if (!config.UseTransports)
+            return false;
+        if (via.Quests.Length == 0)
+            return true;
+        return via.AnyQuest ? via.Quests.Any(QuestDone) : via.Quests.All(QuestDone);
+    }
+
+    // Warp conditions hold Quest sheet rows (0x10000 + id).
+    private static bool QuestDone(uint questRow) => QuestManager.IsQuestComplete((ushort)(questRow & 0xFFFF));
 
     private static unsafe (bool Has, uint Territory, Vector2 Xz) ReadFlag()
     {
@@ -330,18 +457,50 @@ public sealed class Plugin : IDalamudPlugin
             return new Goal(flag.Territory, flag.Xz, null, Loc.T("flag"), true);
         }
 
-        if (config.Mode is WayMode.MarketBoard or WayMode.Mender)
+        if (config.Mode == WayMode.Nearest)
         {
-            var (kind, name, missing) = config.Mode == WayMode.MarketBoard
-                ? (LandmarkKind.MarketBoard, "market", "status.no-market")
-                : (LandmarkKind.Mender, "mender", "status.no-mender");
-            if (landmarks.Nearest(kind, ClientState.TerritoryType, new Vector2(from.X, from.Z), links) is not { } place)
+            var kind = config.Place;
+            var name = Loc.T($"place.{kind}");
+            Func<Landmark, bool>? filter = null;
+            if (kind == LandmarkKind.Guild)
             {
-                status = Loc.T(missing);
-                Trace($"no {kind} reachable on foot");
+                // A job (black mage) trains at its base class's guild (thaumaturge).
+                var job = ObjectTable.LocalPlayer?.ClassJob.ValueNullable;
+                var parent = job?.ClassJobParent.ValueNullable ?? job;
+                var className = parent?.Name.ExtractText() ?? "";
+                if (className.Length == 0)
+                    return null;
+                filter = p => p.Label.Contains(className, StringComparison.OrdinalIgnoreCase);
+                name = Loc.T("place.Guild.named", char.ToUpperInvariant(className[0]) + className[1..]);
+            }
+            if (landmarks.Nearest(kind, ClientState.TerritoryType, new Vector2(from.X, from.Z), links, filter) is not { } place)
+            {
+                status = Loc.T(kind == LandmarkKind.Guild ? "status.no-guild" : "status.no-place", name);
+                Trace($"no {kind} reachable");
                 return null;
             }
-            return new Goal(place.Territory, place.Xz, null, Loc.T(name), false);
+            return new Goal(place.Territory, place.Xz, null, name, false);
+        }
+
+        if (config.Mode == WayMode.AetherCurrent)
+        {
+            if (currents.Progress(ClientState.TerritoryType) is not { } progress)
+            {
+                status = Loc.T("status.no-currents");
+                Trace("no aether currents in this zone");
+                return null;
+            }
+            if (progress.FieldLeft.Count == 0)
+            {
+                status = progress.QuestsLeft.Count == 0
+                    ? Loc.T("status.currents-done", progress.Collected, progress.Total)
+                    : Loc.T("status.currents-quests", progress.Collected, progress.Total, progress.QuestsLeft.Count);
+                Trace("no field aether currents left here");
+                return null;
+            }
+            var nearest = progress.FieldLeft.MinBy(c => Vector3.Distance(c.Position!.Value, from));
+            var spot = nearest.Position!.Value;
+            return new Goal(nearest.Territory, new Vector2(spot.X, spot.Z), spot, Loc.T("current", progress.Collected, progress.Total), false);
         }
 
         var quest = SelectedQuest();
@@ -360,22 +519,57 @@ public sealed class Plugin : IDalamudPlugin
             return null;
         }
 
-        // Several spots for one step (e.g. "speak to three people"): nearest one in this zone, else the first.
-        var best = locations[0];
-        var bestDistance = float.MaxValue;
-        foreach (var location in locations)
+        // Several spots for one step (e.g. "speak to three people"): lead to the nearest one not yet walked to,
+        // mark it visited on arrival and move on to the next. The game does not say which ones are done, so
+        // standing at a spot is taken as having dealt with it (/way skip moves on by hand).
+        var key = (q.QuestId, QuestTargets.Sequence(q));
+        if (key != visitedKey)
         {
-            if (location.Territory != ClientState.TerritoryType)
-                continue;
-            var d = Vector3.Distance(location.Position, from);
-            if (d < bestDistance)
+            visitedKey = key;
+            visited.Clear();
+        }
+        var here = ClientState.TerritoryType;
+        if (locations.Count > 1)
+        {
+            for (var i = 0; i < locations.Count; i++)
             {
-                best = location;
+                var spot = locations[i];
+                if (spot.Territory == here && Vector2.Distance(new Vector2(spot.Position.X, spot.Position.Z), new Vector2(from.X, from.Z)) < VisitedDistance
+                    && MathF.Abs(spot.Position.Y - from.Y) < 5f)
+                    visited.Add(i);
+            }
+            // Every spot visited but the step still open: start over rather than lead nowhere.
+            if (visited.Count >= locations.Count)
+                visited.Clear();
+        }
+
+        var best = -1;
+        var bestDistance = float.MaxValue;
+        for (var i = 0; i < locations.Count; i++)
+        {
+            if (visited.Contains(i))
+                continue;
+            // Spots in other zones rank after every spot in this one.
+            var d = locations[i].Territory == here ? Vector3.Distance(locations[i].Position, from) : float.MaxValue / 2;
+            if (best < 0 || d < bestDistance)
+            {
+                best = i;
                 bestDistance = d;
             }
         }
+        chosenSpot = locations.Count > 1 ? best : -1;
+        otherSpots = [];
+        for (var i = 0; i < locations.Count; i++)
+        {
+            if (i != best && !visited.Contains(i) && locations[i].Territory == here)
+                otherSpots.Add(locations[i].Position);
+        }
+
+        var next = locations[best];
         var label = q.Accepted ? q.Name : Loc.T("pick-up", q.Name);
-        return new Goal(best.Territory, new Vector2(best.Position.X, best.Position.Z), best.Position, label, false);
+        if (locations.Count > 1)
+            label += Loc.T("spots", visited.Count + 1, locations.Count);
+        return new Goal(next.Territory, new Vector2(next.Position.X, next.Position.Z), next.Position, label, false);
     }
 
     private QuestEntry? SelectedQuest()
@@ -458,9 +652,9 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         // Measured walking length when we have it, straight line (inflated) until then.
-        float Cost(ZoneExit e) => config.ExitByPathLength && exitLengths.TryGetValue(e, out var length)
+        float Cost(ZoneExit e) => (config.ExitByPathLength && exitLengths.TryGetValue(e, out var length)
             ? length
-            : Vector2.Distance(e.Xz, here) * 1.3f;
+            : Vector2.Distance(e.Xz, here) * 1.3f) + (e.Via is { Gil: > 0 } ? FarePenalty : 0f);
 
         var exit = hops[0];
         foreach (var hop in hops)
@@ -487,8 +681,7 @@ public sealed class Plugin : IDalamudPlugin
             Vector3? floor;
             try
             {
-                floor = pointOnFloor.InvokeFunc(new Vector3(hop.Xz.X, 1024f, hop.Xz.Y), false, 5f)
-                        ?? nearestPoint.InvokeFunc(new Vector3(hop.Xz.X, from.Y, hop.Xz.Y), 10f, 50f);
+                floor = FloorNear(hop.Xz, from);
             }
             catch (Exception)
             {
@@ -558,8 +751,19 @@ public sealed class Plugin : IDalamudPlugin
             var exit = ChooseExit(from, hops, destination.Territory, out var exitCost);
             goal = exit.Xz;
             exact = null;
-            Step = Loc.T("step.exit", exit.Name);
-            marker = exit.Name;
+            if (exit.Via is { } via)
+            {
+                // Ferry, airship, lift: walk to the NPC, then pick the line in their menu.
+                var atNpc = Vector2.Distance(new Vector2(from.X, from.Z), exit.Xz) < AtNpcDistance;
+                var fare = via.Gil > 0 ? Loc.T("step.fare", via.Gil) : "";
+                Step = Loc.T(atNpc ? "step.transport.here" : "step.transport.walk", via.Npc, via.Option, fare);
+                marker = via.Npc;
+            }
+            else
+            {
+                Step = Loc.T("step.exit", exit.Name);
+                marker = exit.Name;
+            }
 
             // A teleport for a short walk is noise: only suggest it past the configured walking distance.
             if (exitCost + CrossZoneAllowance < config.TeleportMinWalk)
@@ -580,15 +784,9 @@ public sealed class Plugin : IDalamudPlugin
             // Quest spots have a real height; snapping near it avoids landing on a roof above a multi-floor city.
             if (exact is { } spot)
                 floor = nearestPoint.InvokeFunc(spot, 4f, 6f);
-            // Map icons and flags only have X/Z. Dropping from the sky lands on the topmost surface, which in
-            // Ul'dah is a balcony or roof above the NPC, so first look for floor at the player's own level:
-            // straight down from a little above their head, then sideways around that height.
-            floor ??= pointOnFloor.InvokeFunc(new Vector3(goal.X, from.Y + 3f, goal.Y), false, 4f);
-            floor ??= nearestPoint.InvokeFunc(new Vector3(goal.X, from.Y, goal.Y), 6f, 8f);
-            if (sameZone && destination.IsFlag)
-                floor ??= flagToPoint.InvokeFunc();
-            floor ??= pointOnFloor.InvokeFunc(new Vector3(goal.X, 1024f, goal.Y), false, 5f);
-            floor ??= nearestPoint.InvokeFunc(new Vector3(goal.X, from.Y, goal.Y), 10f, 50f);
+            if (floor == null && sameZone && destination.IsFlag && goal == destination.Xz)
+                floor = FloorNear(goal, from, flagFallback: true);
+            floor ??= FloorNear(goal, from);
         }
         catch (Exception e)
         {
@@ -612,10 +810,15 @@ public sealed class Plugin : IDalamudPlugin
         status = "";
         Trace($"{label} x={goal.X:0.0} z={goal.Y:0.0} (goal territory {destination.Territory}, here {ClientState.TerritoryType}) -> floor {to}");
 
+        UpdateMountTip();
+
+        // Mounted in a zone where flying is unlocked: plan through the air (vnavmesh's flight volume).
+        var fly = config.FlyWhenAble && Condition[ConditionFlag.Mounted] && CanFlyHere();
+        // In the air the drawn route starts above the floor; allow more slack before calling it "off route".
+        var offRoute = path.Count > 0 && renderer.OffRoute > (fly ? OffRouteDistance * 3f : OffRouteDistance);
+        var changed = lastTo is not { } prev || Vector3.DistanceSquared(prev, to) > 0.25f || fly != pathFlying;
         // Keep the route fixed while the player follows it: re-asking vnavmesh on every step reshapes the curve
         // slightly each time, which reads as stutter.
-        var offRoute = path.Count > 0 && renderer.OffRoute > OffRouteDistance;
-        var changed = lastTo is not { } prev || Vector3.DistanceSquared(prev, to) > 0.25f;
         if (!changed && !offRoute && path.Count > 0)
             return;
 
@@ -623,10 +826,12 @@ public sealed class Plugin : IDalamudPlugin
         if (changed)
             path = [];
         lastTo = to;
+        pathFlying = fly;
+        Trace(fly ? "planning a flight path" : "planning a walking path", "fly");
         try
         {
             pendingSince = DateTime.UtcNow;
-            pending = pathfind.InvokeFunc(from, to, false).ContinueWith(t =>
+            pending = pathfind.InvokeFunc(from, to, fly).ContinueWith(t =>
             {
                 if (t.IsCompletedSuccessfully && t.Result is { Count: > 0 } result)
                 {
@@ -648,5 +853,35 @@ public sealed class Plugin : IDalamudPlugin
             Log.Debug(e, "Pathfind failed");
             pending = null;
         }
+    }
+
+    // Floor under a map position that only has X/Z (map icons, flags, exits, NPCs from the Level sheet).
+    // Dropping from the sky lands on the topmost surface, which in Ul'dah is a balcony or roof above the NPC, so
+    // first look for floor at the player's own level: straight down from a little above their head, then
+    // sideways around that height. Throws when vnavmesh is missing; callers handle that.
+    private Vector3? FloorNear(Vector2 xz, Vector3 from, bool flagFallback = false)
+    {
+        var floor = pointOnFloor.InvokeFunc(new Vector3(xz.X, from.Y + 3f, xz.Y), false, 4f);
+        floor ??= nearestPoint.InvokeFunc(new Vector3(xz.X, from.Y, xz.Y), 6f, 8f);
+        if (flagFallback)
+            floor ??= flagToPoint.InvokeFunc();
+        floor ??= pointOnFloor.InvokeFunc(new Vector3(xz.X, 1024f, xz.Y), false, 5f);
+        floor ??= nearestPoint.InvokeFunc(new Vector3(xz.X, from.Y, xz.Y), 10f, 50f);
+        return floor;
+    }
+
+    // Suggests the mount for a long walk in a zone that allows it. Players without a mount yet (the chocobo comes
+    // with the Grand Company quest) are never nagged.
+    private void UpdateMountTip()
+    {
+        MountTip = null;
+        if (!config.MountHint || Condition[ConditionFlag.Mounted] || Condition[ConditionFlag.InCombat] || !ZoneAllowsMount() || !HasMount())
+            return;
+        var walk = path.Count > 0 ? renderer.Remaining : 0f;
+        if (walk < config.MountHintDistance)
+            return;
+        MountTip = config.ShowEta
+            ? Loc.T("step.mount.eta", PathRenderer.Eta(walk / MountSpeed), PathRenderer.Eta(walk / RunSpeed))
+            : Loc.T("step.mount");
     }
 }

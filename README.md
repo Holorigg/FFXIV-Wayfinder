@@ -3,9 +3,15 @@
 Плагин Dalamud для FINAL FANTASY XIV: рисует пеший путь на земле, как GPS, к флажку на карте или к цели квеста.
 
 - Режимы: **флажок на карте** (Ctrl + правый клик по карте), **квест** (сюжет автоматически или любой взятый квест),
-  **ближайший маркетборд** и **ближайший ремонтник** (кнопки в окне).
-- Ведёт через выходы между зонами, выбирая выход по реальной длине пути.
+  **ближайшее место** и **потоки эфира**.
+- Ближайшее место — кнопкой в окне: маркетборд, ремонтник, колокол ретейнеров, гостиница, почта, доска охоты,
+  чокобо-извозчик, гильдия твоего класса.
+- Шаг квеста с несколькими целями («поговори с тремя») ведёт по ним по очереди; остальные цели видны маркерами.
+- Ведёт через выходы между зонами, выбирая выход по реальной длине пути, и через паромы, дирижабли и лифты,
+  которые у тебя открыты (с ценой).
 - Подсказывает городской аэтернет, если перелёт заметно короче, и телепорт с ценой, если идти далеко.
+- Время в пути; подсказка сесть на маунта, если он у тебя есть. На маунте в зоне с полётами путь идёт по воздуху.
+- По желанию — маршрут на миникарте (по умолчанию выключен).
 - Прячет путь за стенами и в бою, всё настраивается в окне.
 - Только рисует: персонажа не двигает.
 
@@ -19,9 +25,11 @@
 
 ## Использование
 
-`/way` открывает окно: режим, выбор квеста, маршрут, внешний вид, язык (RU / EN).
+`/way` открывает окно: режим, выбор квеста, ближайшие места, маршрут, внешний вид, язык (RU / EN).
 
-Быстрые команды: `/way flag`, `/way market`, `/way repair`, `/way quest [название]`, `/way next`, `/way on`, `/way off`, `/way toggle`.
+Быстрые команды: `/way flag`, `/way quest [название]`, `/way next`, `/way skip` (следующая цель шага),
+`/way market`, `/way repair`, `/way bell`, `/way inn`, `/way mail`, `/way hunt`, `/way chocobo`, `/way guild`,
+`/way currents`, `/way on`, `/way off`, `/way toggle`.
 
 ## Важно
 
@@ -29,8 +37,11 @@
 
 ---
 
-**English.** Dalamud plugin that draws a GPS-style walking path on the ground to your map flag or quest objective,
-through zone exits, with city aethernet and teleport hints. It only draws and never moves your character.
+**English.** Dalamud plugin that draws a GPS-style path on the ground to your map flag, quest objective (several
+spots of one step in turn), the nearest service (market board, mender, summoning bell, inn, mail, hunt board,
+chocobo porter, your class guild) or the aether currents of a zone. Routes through zone exits, unlocked ferries,
+airships and lifts, with city aethernet and teleport hints, travel time, a mount hint, flight paths when you can fly,
+and an optional minimap overlay. It only draws and never moves your character.
 Requires vnavmesh (`https://puni.sh/api/repository/veyn`). Add
 `https://raw.githubusercontent.com/Holorigg/FFXIV-Wayfinder/main/repo.json` as a custom repository, install Wayfinder,
 then type `/way`.

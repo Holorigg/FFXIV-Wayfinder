@@ -37,7 +37,13 @@ internal sealed class PathRenderer
     // Distance from the player to the drawn route; the plugin asks vnavmesh for a new path when it grows.
     public float OffRoute { get; private set; }
 
-    public void Draw(Vector3 player, IReadOnlyList<Vector3> path, Vector3 target, string label, string? hint, string markerLabel)
+    // Walking length left along the drawn route, as of the last frame.
+    public float Remaining { get; private set; }
+
+    // `speed` (yalms per second) adds a travel time to the panel when above zero; `others` are the remaining
+    // spots of a quest step with several targets, drawn as small markers.
+    public void Draw(Vector3 player, IReadOnlyList<Vector3> path, Vector3 target, string label, string? hint, string markerLabel,
+                     float speed, IReadOnlyList<Vector3> others)
     {
         var dt = Math.Clamp(ImGui.GetIO().DeltaTime, 0f, 0.1f);
         time += dt;
@@ -76,8 +82,19 @@ internal sealed class PathRenderer
             DrawChevrons(drawList, start, end, camera, dt);
         if (Vector3.Distance(player, target) < config.Range + 20f)
             DrawDestination(drawList, target, markerLabel, camera, dt);
+        foreach (var other in others)
+        {
+            if (Vector3.Distance(player, other) < config.Range + 20f)
+                DrawSpot(drawList, other, camera, dt);
+        }
+        Remaining = arcs[^1] - start + offRoute;
         if (config.ShowHud)
-            DrawPill(Loc.T("panel", label, arcs[^1] - start + offRoute), ArrowAngle(player, start), hint);
+        {
+            var text = Loc.T("panel", label, Remaining);
+            if (speed > 0f && Remaining > 15f)
+                text += Loc.T("panel.eta", Eta(Remaining / speed));
+            DrawPill(text, ArrowAngle(player, start), hint);
+        }
 
         PruneVisibility();
     }
@@ -362,6 +379,31 @@ internal sealed class PathRenderer
             drawList.AddText(pos + Vector2.One, ImGui.GetColorU32(new Vector4(0, 0, 0, alpha * 0.8f)), label);
             drawList.AddText(pos, ImGui.GetColorU32(new Vector4(1, 1, 1, alpha)), label);
         }
+    }
+
+    // A quieter marker for the other targets of the same quest step.
+    private void DrawSpot(ImDrawListPtr drawList, Vector3 spot, Vector3? camera, float dt)
+    {
+        var vis = 1f;
+        if (config.HideBehindWalls && camera is { } cam)
+            vis = Visibility(Cell(spot + Up * 1.2f), cam, spot + Up * 1.2f, dt);
+        var alpha = config.Opacity * vis * 0.7f;
+        if (alpha < 0.01f)
+            return;
+        DrawRing(drawList, spot + Up * 0.06f, 0.7f, Colour(alpha, 0.2f), 1.5f);
+        if (!Project(spot + Up * 0.06f, out var ground) || !Project(spot + Up * 1.8f, out var top))
+            return;
+        drawList.AddLine(ground, top, Colour(alpha * 0.3f), 1f);
+        drawList.AddCircleFilled(top, 4f, Colour(alpha, 0.3f));
+    }
+
+    internal static string Eta(float seconds)
+    {
+        if (seconds < 60f)
+            return Loc.T("eta.seconds", MathF.Max(5f, MathF.Round(seconds / 5f) * 5f));
+        var minutes = (int)(seconds / 60f);
+        var rest = (int)(seconds % 60f / 10f) * 10;
+        return rest == 0 ? Loc.T("eta.minutes", minutes) : Loc.T("eta.minutes-seconds", minutes, rest);
     }
 
     private static void DrawRing(ImDrawListPtr drawList, Vector3 centre, float radius, uint colour, float thickness)

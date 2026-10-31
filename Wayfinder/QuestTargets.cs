@@ -74,6 +74,8 @@ internal sealed class QuestTargets
         result.Add(new QuestLocation(value.Territory.RowId, new Vector3(value.X, value.Y, value.Z)));
     }
 
+    public string NameOfRow(uint row) => Name((ushort)(row & 0xFFFF));
+
     private string Name(ushort questId) =>
         quests.TryGetRow(QuestRowOffset + questId, out var row) ? row.Name.ExtractText() : $"Quest {questId}";
 

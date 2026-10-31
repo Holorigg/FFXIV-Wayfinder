@@ -6,11 +6,19 @@ using Lumina.Excel.Sheets;
 
 namespace Wayfinder;
 
-internal sealed record ZoneExit(uint From, uint To, Vector2 Xz, string Name);
+// An NPC that carries you to another zone for a fare: ferry skipper, airship ticketer, lift attendant, gatekeep.
+// Option is the line to pick in their menu ("Purchase Passage to Aleport").
+internal sealed record Transport(string Npc, string Option, uint Gil, uint[] Quests, bool AnyQuest);
+
+internal sealed record ZoneExit(uint From, uint To, Vector2 Xz, string Name, Transport? Via = null);
 
 // Zone transitions come from the red map-link arrows: MapMarker rows with DataType 1 and an icon point at another Map.
 internal sealed class ZoneLinks
 {
+    // TerritoryIntendedUse: 0 = city, 1 = open field. Transports to anything else (inn rooms, housing, the Gold
+    // Saucer, instanced areas) are not travel between public zones.
+    private static readonly HashSet<uint> PublicZones = [0, 1];
+
     private readonly Dictionary<uint, List<ZoneExit>> exits = [];
 
     public ZoneLinks(IDataManager data)
@@ -41,11 +49,17 @@ internal sealed class ZoneLinks
         }
 
         EntranceCount = AddEntrances(data);
+        TransportCount = AddTransports(data);
     }
 
     public int Count => exits.Count;
 
     public int EntranceCount { get; }
+
+    public int TransportCount { get; }
+
+    // Which exits may be used right now; transports are dropped while their quest is not done or the option is off.
+    public Func<ZoneExit, bool> Usable { get; set; } = _ => true;
 
     private void Add(ZoneExit exit)
     {
@@ -107,7 +121,62 @@ internal sealed class ZoneLinks
         return added;
     }
 
-    // Zone transitions from `from` to every territory reachable on foot within `limit` hops (itself = 0).
+    // Ferries, airships, lifts and gates are NPC menus: an ENpc placed in the Level sheet (Type 8) whose event
+    // list holds Warp rows (handler type 2 in the high word). A Warp names the destination zone, the menu line,
+    // the fare and the quests that unlock it.
+    private int AddTransports(IDataManager data)
+    {
+        var territories = data.GetExcelSheet<TerritoryType>();
+        var npcs = data.GetExcelSheet<ENpcBase>();
+        var residents = data.GetExcelSheet<ENpcResident>();
+        var warps = data.GetExcelSheet<Warp>();
+        var seen = new HashSet<(uint, uint)>();
+        var added = 0;
+
+        bool IsPublic(uint territory) => territories.TryGetRow(territory, out var zone) && PublicZones.Contains(zone.TerritoryIntendedUse.RowId);
+
+        foreach (var level in data.GetExcelSheet<Level>())
+        {
+            // Type 8 = NPC placed in the world.
+            if (level.Type != 8 || !npcs.TryGetRow(level.Object.RowId, out var npc))
+                continue;
+            var from = level.Territory.RowId;
+            if (!IsPublic(from))
+                continue;
+            foreach (var handler in npc.ENpcData)
+            {
+                if (handler.RowId >> 16 != 2 || !warps.TryGetRow(handler.RowId, out var warp))
+                    continue;
+                var to = warp.TerritoryType.RowId;
+                var option = warp.Name.ExtractText();
+                // Unnamed warps are chocobo porters and innkeepers; same-zone ones are lifts to a landing.
+                if (string.IsNullOrEmpty(option) || to == from || !IsPublic(to) || !seen.Add((level.Object.RowId, warp.RowId)))
+                    continue;
+
+                var condition = warp.WarpCondition.ValueNullable;
+                var quests = new List<uint>();
+                if (condition is { } c)
+                {
+                    foreach (var quest in new[] { c.RequiredQuest1.RowId, c.RequiredQuest2.RowId, c.RequiredQuest3.RowId, c.RequiredQuest4.RowId })
+                    {
+                        if (quest != 0)
+                            quests.Add(quest);
+                    }
+                }
+                var npcName = residents.TryGetRow(level.Object.RowId, out var resident) ? resident.Singular.ExtractText() : "";
+                if (npcName.Length > 0)
+                    npcName = char.ToUpperInvariant(npcName[0]) + npcName[1..];
+                var name = territories.TryGetRow(to, out var zone) ? zone.PlaceName.ValueNullable?.Name.ExtractText() ?? $"#{to}" : $"#{to}";
+                // CompleteParam 2: any one of the listed quests (the airship pass comes from either of two quests).
+                var via = new Transport(npcName, option, condition?.Gil ?? 0, [.. quests], condition?.CompleteParam == 2);
+                Add(new ZoneExit(from, to, new Vector2(level.X, level.Z), name, via));
+                added++;
+            }
+        }
+        return added;
+    }
+
+    // Zone transitions from `from` to every territory reachable within `limit` hops (itself = 0).
     public Dictionary<uint, int> DistancesFrom(uint from, int limit)
     {
         var depth = new Dictionary<uint, int> { [from] = 0 };
@@ -120,36 +189,20 @@ internal sealed class ZoneLinks
                 continue;
             foreach (var exit in list)
             {
-                if (depth.TryAdd(exit.To, depth[zone] + 1))
+                if (Usable(exit) && depth.TryAdd(exit.To, depth[zone] + 1))
                     queue.Enqueue(exit.To);
             }
         }
         return depth;
     }
 
-    // Number of zone transitions between two territories, or -1 when they are not connected on foot.
+    // Number of zone transitions between two territories, or -1 when they are not connected.
     public int Hops(uint from, uint goal, int limit = 4)
     {
         if (from == goal)
             return 0;
-        var depth = new Dictionary<uint, int> { [from] = 0 };
-        var queue = new Queue<uint>();
-        queue.Enqueue(from);
-        while (queue.Count > 0)
-        {
-            var zone = queue.Dequeue();
-            if (depth[zone] >= limit || !exits.TryGetValue(zone, out var list))
-                continue;
-            foreach (var exit in list)
-            {
-                if (!depth.TryAdd(exit.To, depth[zone] + 1))
-                    continue;
-                if (exit.To == goal)
-                    return depth[exit.To];
-                queue.Enqueue(exit.To);
-            }
-        }
-        return -1;
+        var depth = DistancesFrom(from, limit);
+        return depth.TryGetValue(goal, out var hops) ? hops : -1;
     }
 
     // Exits out of `from` that start a shortest (fewest zones) route to `goal`.
@@ -165,7 +218,7 @@ internal sealed class ZoneLinks
                 continue;
             foreach (var exit in list)
             {
-                if (previous.TryAdd(exit.To, zone))
+                if (Usable(exit) && previous.TryAdd(exit.To, zone))
                     queue.Enqueue(exit.To);
             }
         }
@@ -176,6 +229,6 @@ internal sealed class ZoneLinks
         var next = goal;
         while (previous[next] != from)
             next = previous[next];
-        return exits[from].FindAll(e => e.To == next);
+        return exits[from].FindAll(e => e.To == next && Usable(e));
     }
 }

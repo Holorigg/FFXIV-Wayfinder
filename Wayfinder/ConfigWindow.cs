@@ -31,32 +31,40 @@ internal sealed class ConfigWindow : Window
         if (ImGui.RadioButton("EN", config.Language == Language.English))
             SetLanguage(Language.English);
 
-        if (ImGui.Button(Loc.T("ui.market-button")))
-            plugin.SetMode(WayMode.MarketBoard, config.QuestId);
-        Tip("ui.market-tip");
-        ImGui.SameLine();
-        if (ImGui.Button(Loc.T("ui.mender-button")))
-            plugin.SetMode(WayMode.Mender, config.QuestId);
-        Tip("ui.mender-tip");
+        ImGui.TextUnformatted(Loc.T("ui.nearest"));
+        var places = Enum.GetValues<LandmarkKind>();
+        for (var i = 0; i < places.Length; i++)
+        {
+            var kind = places[i];
+            if (i % 4 != 0)
+                ImGui.SameLine();
+            var active = config.Mode == WayMode.Nearest && config.Place == kind;
+            if (active)
+                ImGui.PushStyleColor(ImGuiCol.Button, ImGui.GetColorU32(ImGuiCol.ButtonActive));
+            if (ImGui.Button($"{Loc.T($"ui.place.{kind}")}###place{kind}", new System.Numerics.Vector2(130, 0)))
+                plugin.SetPlace(kind);
+            if (active)
+                ImGui.PopStyleColor();
+            Tip($"ui.place-tip.{kind}");
+        }
 
         ImGui.Separator();
         ImGui.TextUnformatted(Loc.T("ui.lead"));
-        if (ImGui.RadioButton(Loc.T("ui.mode.flag"), config.Mode == WayMode.Flag) && config.Mode != WayMode.Flag)
-            plugin.SetMode(WayMode.Flag, config.QuestId);
+        Mode(WayMode.Flag, "ui.mode.flag");
         ImGui.SameLine();
-        if (ImGui.RadioButton(Loc.T("ui.mode.quest"), config.Mode == WayMode.Quest) && config.Mode != WayMode.Quest)
-            plugin.SetMode(WayMode.Quest, config.QuestId);
+        Mode(WayMode.Quest, "ui.mode.quest");
         ImGui.SameLine();
-        if (ImGui.RadioButton(Loc.T("ui.mode.market"), config.Mode == WayMode.MarketBoard) && config.Mode != WayMode.MarketBoard)
-            plugin.SetMode(WayMode.MarketBoard, config.QuestId);
+        Mode(WayMode.Nearest, "ui.mode.nearest");
         ImGui.SameLine();
-        if (ImGui.RadioButton(Loc.T("ui.mode.mender"), config.Mode == WayMode.Mender) && config.Mode != WayMode.Mender)
-            plugin.SetMode(WayMode.Mender, config.QuestId);
+        Mode(WayMode.AetherCurrent, "ui.mode.currents");
+        Tip("ui.currents-tip");
 
         if (config.Mode == WayMode.Flag)
             ImGui.TextDisabled(Loc.T("ui.flag-tip"));
         else if (config.Mode == WayMode.Quest)
             DrawQuestList();
+        else if (config.Mode == WayMode.AetherCurrent)
+            DrawCurrents();
 
         ImGui.Separator();
         var now = plugin.CurrentTarget;
@@ -76,6 +84,28 @@ internal sealed class ConfigWindow : Window
             DrawRouting();
         if (ImGui.CollapsingHeader($"{Loc.T("ui.look")}###look"))
             DrawLook();
+    }
+
+    private void Mode(WayMode mode, string key)
+    {
+        if (ImGui.RadioButton(Loc.T(key), config.Mode == mode) && config.Mode != mode)
+            plugin.SetMode(mode, config.QuestId);
+    }
+
+    private void DrawCurrents()
+    {
+        if (plugin.CurrentsHere is not { } progress)
+        {
+            ImGui.TextDisabled(Loc.T("ui.currents-none"));
+            return;
+        }
+        ImGui.TextUnformatted(Loc.T("ui.currents-progress", progress.Collected, progress.Total));
+        ImGui.TextUnformatted(Loc.T("ui.currents-field", progress.FieldLeft.Count));
+        if (progress.QuestsLeft.Count == 0)
+            return;
+        ImGui.TextUnformatted(Loc.T("ui.currents-quests"));
+        foreach (var quest in progress.QuestsLeft)
+            ImGui.BulletText(plugin.QuestName(quest));
     }
 
     private void SetLanguage(Language language)
@@ -107,6 +137,14 @@ internal sealed class ConfigWindow : Window
 
         if (quests.Count == 0)
             ImGui.TextDisabled(Loc.T("ui.no-quests"));
+        if (plugin.SpotsLeft > 1)
+        {
+            ImGui.TextUnformatted(Loc.T("ui.spots-left", plugin.SpotsLeft));
+            ImGui.SameLine();
+            if (ImGui.Button(Loc.T("ui.skip")))
+                plugin.SkipSpot();
+            Tip("ui.skip-tip");
+        }
         ImGui.TextDisabled(Loc.T("ui.next-tip"));
     }
 
@@ -124,6 +162,15 @@ internal sealed class ConfigWindow : Window
             changed |= ImGui.SliderFloat(Loc.T("ui.aethernet-cost"), ref config.AethernetOverhead, 0f, 150f, "%.0f");
             Tip("ui.aethernet-cost-tip");
         }
+
+        changed |= ImGui.Checkbox(Loc.T("ui.transports"), ref config.UseTransports);
+        Tip("ui.transports-tip");
+        changed |= ImGui.Checkbox(Loc.T("ui.fly"), ref config.FlyWhenAble);
+        Tip("ui.fly-tip");
+        changed |= ImGui.Checkbox(Loc.T("ui.mount-hint"), ref config.MountHint);
+        Tip("ui.mount-hint-tip");
+        if (config.MountHint)
+            changed |= ImGui.SliderFloat(Loc.T("ui.mount-min"), ref config.MountHintDistance, 50f, 600f, "%.0f");
 
         changed |= ImGui.Checkbox(Loc.T("ui.teleport-hint"), ref config.ShowTeleportHint);
         Tip("ui.teleport-hint-tip");
@@ -154,6 +201,9 @@ internal sealed class ConfigWindow : Window
         changed |= ImGui.Checkbox(Loc.T("ui.animate"), ref config.Animate);
         changed |= ImGui.Checkbox(Loc.T("ui.walls"), ref config.HideBehindWalls);
         changed |= ImGui.Checkbox(Loc.T("ui.panel"), ref config.ShowHud);
+        changed |= ImGui.Checkbox(Loc.T("ui.eta"), ref config.ShowEta);
+        changed |= ImGui.Checkbox(Loc.T("ui.minimap"), ref config.ShowOnMinimap);
+        Tip("ui.minimap-tip");
         changed |= ImGui.Checkbox(Loc.T("ui.combat"), ref config.HideInCombat);
         Tip("ui.combat-tip");
         changed |= ImGui.Checkbox(Loc.T("ui.duties"), ref config.HideInDuties);
