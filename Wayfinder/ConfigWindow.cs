@@ -31,6 +31,10 @@ internal sealed class ConfigWindow : Window
         if (ImGui.RadioButton("EN", config.Language == Language.English))
             SetLanguage(Language.English);
 
+        if (ImGui.Button(Loc.T("ui.market-button")))
+            plugin.SetMode(WayMode.MarketBoard, config.QuestId);
+        Tip("ui.market-tip");
+
         ImGui.Separator();
         ImGui.TextUnformatted(Loc.T("ui.lead"));
         if (ImGui.RadioButton(Loc.T("ui.mode.flag"), config.Mode == WayMode.Flag) && config.Mode != WayMode.Flag)
@@ -38,10 +42,13 @@ internal sealed class ConfigWindow : Window
         ImGui.SameLine();
         if (ImGui.RadioButton(Loc.T("ui.mode.quest"), config.Mode == WayMode.Quest) && config.Mode != WayMode.Quest)
             plugin.SetMode(WayMode.Quest, config.QuestId);
+        ImGui.SameLine();
+        if (ImGui.RadioButton(Loc.T("ui.mode.market"), config.Mode == WayMode.MarketBoard) && config.Mode != WayMode.MarketBoard)
+            plugin.SetMode(WayMode.MarketBoard, config.QuestId);
 
         if (config.Mode == WayMode.Flag)
             ImGui.TextDisabled(Loc.T("ui.flag-tip"));
-        else
+        else if (config.Mode == WayMode.Quest)
             DrawQuestList();
 
         ImGui.Separator();

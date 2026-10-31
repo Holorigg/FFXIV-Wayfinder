@@ -44,6 +44,26 @@ internal sealed class ZoneLinks
 
     public int Count => exits.Count;
 
+    // Zone transitions from `from` to every territory reachable on foot within `limit` hops (itself = 0).
+    public Dictionary<uint, int> DistancesFrom(uint from, int limit)
+    {
+        var depth = new Dictionary<uint, int> { [from] = 0 };
+        var queue = new Queue<uint>();
+        queue.Enqueue(from);
+        while (queue.Count > 0)
+        {
+            var zone = queue.Dequeue();
+            if (depth[zone] >= limit || !exits.TryGetValue(zone, out var list))
+                continue;
+            foreach (var exit in list)
+            {
+                if (depth.TryAdd(exit.To, depth[zone] + 1))
+                    queue.Enqueue(exit.To);
+            }
+        }
+        return depth;
+    }
+
     // Number of zone transitions between two territories, or -1 when they are not connected on foot.
     public int Hops(uint from, uint goal, int limit = 4)
     {

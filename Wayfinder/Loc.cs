@@ -19,6 +19,7 @@ internal static class Loc
         // panel
         ["panel"] = ("{0}  -  {1:0} y", "{0}  ·  {1:0} м"),
         ["flag"] = ("Flag", "Флажок"),
+        ["market"] = ("Market Board", "Маркетборд"),
         ["pick-up"] = ("{0} (pick up)", "{0} (взять квест)"),
         ["step.shard.walk"] = ("Walk to the aethernet shard \"{0}\", then pick \"{1}\" (about {2:0} y shorter)",
                                "Иди к кристаллу аэтернета «{0}», там выбери «{1}» (короче примерно на {2:0} м)"),
@@ -30,6 +31,7 @@ internal static class Loc
         // statuses
         ["status.place-flag"] = ("Wayfinder: place a flag on the map (Ctrl + right click)",
                                  "Wayfinder: поставь флажок на карте (Ctrl + правый клик)"),
+        ["status.no-market"] = ("Wayfinder: no market board reachable on foot", "Wayfinder: пешком до маркетборда не дойти"),
         ["status.no-quest-target"] = ("Wayfinder: no quest target", "Wayfinder: нет цели квеста"),
         ["status.no-msq"] = ("Wayfinder: no main scenario quest found", "Wayfinder: сюжетный квест не найден"),
         ["status.quest-gone"] = ("Wayfinder: that quest is no longer in your journal", "Wayfinder: этого квеста больше нет в журнале"),
@@ -45,6 +47,7 @@ internal static class Loc
 
         // chat
         ["chat.flag"] = ("following the map flag", "веду к флажку на карте"),
+        ["chat.market"] = ("leading to the nearest market board", "веду к ближайшему маркетборду"),
         ["chat.msq"] = ("following the main scenario: {0}", "веду по сюжету: {0}"),
         ["chat.msq-none"] = ("following the main scenario", "веду по сюжету"),
         ["chat.quest"] = ("following {0}", "веду по квесту: {0}"),
@@ -52,8 +55,8 @@ internal static class Loc
         ["chat.on"] = ("on", "включён"),
         ["chat.off"] = ("off", "выключен"),
         ["chat.no-match"] = ("no quest in your journal matches \"{0}\"", "в журнале нет квеста, похожего на «{0}»"),
-        ["chat.help"] = ("/way opens the window. Shortcuts: flag, quest [name], next, on, off, toggle.",
-                         "/way открывает окно. Быстрые команды: flag, quest [название], next, on, off, toggle."),
+        ["chat.help"] = ("/way opens the window. Shortcuts: flag, market, quest [name], next, on, off, toggle.",
+                         "/way открывает окно. Быстрые команды: flag, market, quest [название], next, on, off, toggle."),
         ["chat.teleport-failed"] = ("teleport failed", "телепорт не удался"),
 
         // window
@@ -62,6 +65,10 @@ internal static class Loc
         ["ui.lead"] = ("Lead me to", "Куда вести"),
         ["ui.mode.flag"] = ("Map flag", "Флажок на карте"),
         ["ui.mode.quest"] = ("Quest", "Квест"),
+        ["ui.mode.market"] = ("Market Board", "Маркетборд"),
+        ["ui.market-button"] = ("Nearest market board", "К ближайшему маркетборду"),
+        ["ui.market-tip"] = ("Picks the closest market board you can walk to; /way market does the same.",
+                             "Ведёт к ближайшему маркетборду, до которого можно дойти; то же делает /way market."),
         ["ui.flag-tip"] = ("Ctrl + right click on the map to place a flag.", "Ctrl + правый клик по карте ставит флажок."),
         ["ui.msq-auto"] = ("Main scenario (auto)", "Сюжет (авто)"),
         ["ui.msq-auto-named"] = ("Main scenario (auto): {0}", "Сюжет (авто): {0}"),

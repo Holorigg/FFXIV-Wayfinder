@@ -9,6 +9,7 @@ public enum WayMode
 {
     Flag,
     Quest,
+    MarketBoard,
 }
 
 [Serializable]

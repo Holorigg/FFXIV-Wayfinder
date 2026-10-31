@@ -47,6 +47,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly QuestTargets questTargets;
     private readonly Teleports teleports;
     private readonly Aethernet aethernet;
+    private readonly Landmarks landmarks;
 
     private readonly ICallGateSubscriber<bool> navReady;
     private readonly ICallGateSubscriber<Vector3?> flagToPoint;
@@ -75,6 +76,8 @@ public sealed class Plugin : IDalamudPlugin
         questTargets = new QuestTargets(DataManager);
         teleports = new Teleports(DataManager);
         aethernet = new Aethernet(DataManager);
+        landmarks = new Landmarks(DataManager);
+        Log.Information("[Wayfinder] {Count} market board icons loaded", landmarks.MarketBoardCount);
         Log.Information("[Wayfinder] {Count} aethernet shards loaded", aethernet.Count);
         configWindow = new ConfigWindow(config, SaveConfig, this);
         windows.AddWindow(configWindow);
@@ -138,6 +141,9 @@ public sealed class Plugin : IDalamudPlugin
             case "toggle":
                 config.Enabled = !config.Enabled;
                 break;
+            case "market" or "mb":
+                SetMode(WayMode.MarketBoard, config.QuestId);
+                return;
             case "flag":
                 SetMode(WayMode.Flag, config.QuestId);
                 return;
@@ -182,6 +188,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (config.Mode == WayMode.Flag)
             return Loc.T("chat.flag");
+        if (config.Mode == WayMode.MarketBoard)
+            return Loc.T("chat.market");
         if (config.QuestId == 0)
             return SelectedQuest() is { } msq ? Loc.T("chat.msq", msq.Name) : Loc.T("chat.msq-none");
         return SelectedQuest() is { } q ? Loc.T("chat.quest", q.Name) : Loc.T("chat.quest-gone");
@@ -315,6 +323,17 @@ public sealed class Plugin : IDalamudPlugin
                 return null;
             }
             return new Goal(flag.Territory, flag.Xz, null, Loc.T("flag"), true);
+        }
+
+        if (config.Mode == WayMode.MarketBoard)
+        {
+            if (landmarks.NearestMarketBoard(ClientState.TerritoryType, new Vector2(from.X, from.Z), links) is not { } board)
+            {
+                status = Loc.T("status.no-market");
+                Trace("no market board reachable on foot");
+                return null;
+            }
+            return new Goal(board.Territory, board.Xz, null, Loc.T("market"), false);
         }
 
         var quest = SelectedQuest();
