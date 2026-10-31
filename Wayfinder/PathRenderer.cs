@@ -58,7 +58,10 @@ internal sealed class PathRenderer
         var start = ProjectOnCurve(player, out var offRoute);
         OffRoute = offRoute;
         var end = MathF.Min(arcs[^1], start + config.Range + 2f);
+        SnapToGround(start, end, player.Y);
+        GroundDebug = DescribeGround(player, start);
         var camera = Plugin.CameraPosition();
+        PrepareCover(player, camera);
 
         var samples = new List<Sample>();
         samples.Add(SampleAt(start, start));
@@ -105,15 +108,199 @@ internal sealed class PathRenderer
     private List<Vector3> curve = [];
     private float[] arcs = [];
 
+    // Ground height per curve point; the navmesh is a coarse surface that cuts through stairs and floats over
+    // bumps, so points are dropped onto the game's own collision once it is loaded around them.
+    private bool[] grounded = [];
+    private float[] meshHeight = [];
+
     private void Prepare(IReadOnlyList<Vector3> path)
     {
         if (ReferenceEquals(path, source))
             return;
         source = path;
-        curve = Smooth([.. path]);
+        curve = Densify(Smooth([.. path]), GroundStep);
+        meshHeight = new float[curve.Count];
+        for (var i = 0; i < curve.Count; i++)
+            meshHeight[i] = curve[i].Y;
+        grounded = new bool[curve.Count];
+        groundHeight = new float[curve.Count];
+        RecomputeArcs();
+    }
+
+    // Arc length over the ground plan only: putting points on the ground changes their height every frame while
+    // walking, and with 3D lengths every chevron further along would slide each time.
+    private void RecomputeArcs()
+    {
         arcs = new float[curve.Count];
         for (var i = 1; i < curve.Count; i++)
-            arcs[i] = arcs[i - 1] + Vector3.Distance(curve[i - 1], curve[i]);
+        {
+            var a = curve[i - 1];
+            var b = curve[i];
+            // A flight path climbs and dives for real, so there the height counts.
+            arcs[i] = arcs[i - 1] + (flying ? Vector3.Distance(a, b) : new Vector2(b.X - a.X, b.Z - a.Z).Length());
+        }
+    }
+
+    private const float GroundStep = 0.5f;
+    // Search window around the height expected from the previous point; a surface further than GroundAccept from
+    // it is a wall top, a roof or a drop, not the next bit of the same floor.
+    private const float GroundAbove = 2f;
+    private const float GroundAccept = 1f;
+    private const float GroundBelow = 2.2f;
+    private const int GroundRaysPerFrame = 160;
+    private bool flying;
+
+    // Flight paths stay as planned; walking paths are put on the ground in the range being drawn.
+    public void SetFlying(bool value) => flying = value;
+
+    // The navmesh can sit two yalms under paving, so it is no reference for the floor. Instead the floor is
+    // followed as a chain from the player's feet: each point takes the surface closest to the height expected from
+    // the previous point (plus the mesh's own slope). A flat plaza stays flat, stairs go a step at a time, and a
+    // wall top beside the route is too far above the chain to be picked.
+    private void SnapToGround(float fromArc, float toArc, float playerY)
+    {
+        if (flying)
+            return;
+        var budget = GroundRaysPerFrame;
+        var changed = false;
+        var first = 0;
+        while (first < curve.Count - 1 && arcs[first + 1] < fromArc)
+            first++;
+
+        var expected = playerY;
+        for (var i = first; i < curve.Count && arcs[i] <= toArc + 2f; i++)
+        {
+            if (i > first)
+                expected += meshHeight[i] - meshHeight[i - 1];
+            if (grounded[i])
+            {
+                expected = groundHeight[i];
+                continue;
+            }
+            if (budget-- <= 0)
+                break;
+            // Collision streams in around the player; a miss is retried on a later frame.
+            if (FloorNear(curve[i].X, curve[i].Z, expected) is not { } y)
+                continue;
+            grounded[i] = true;
+            groundHeight[i] = y;
+            expected = y;
+            changed = true;
+        }
+        if (!changed)
+            return;
+
+        // Always computed from the raw hits, so repeated passes do not creep.
+        // 1. Points the ray missed (a drain, a gap in the collision) take the height between their grounded
+        //    neighbours instead of the navmesh's, which may sit under the ground there.
+        var count = curve.Count;
+        var floor = new float[count];
+        for (var i = 0; i < count; i++)
+        {
+            if (grounded[i])
+            {
+                floor[i] = groundHeight[i];
+                continue;
+            }
+            int before = -1, after = -1;
+            for (var k = 1; k <= FillReach && (before < 0 || after < 0); k++)
+            {
+                if (before < 0 && i - k >= 0 && grounded[i - k])
+                    before = i - k;
+                if (after < 0 && i + k < count && grounded[i + k])
+                    after = i + k;
+            }
+            floor[i] = before >= 0 && after >= 0
+                ? groundHeight[before] + (groundHeight[after] - groundHeight[before]) * (i - before) / (float)(after - before)
+                : meshHeight[i];
+        }
+
+        // 2. A lone hit on a curb or an edge is an outlier: the median of the neighbourhood drops it.
+        var median = new float[count];
+        var window = new List<float>(SmoothReach * 2 + 1);
+        for (var i = 0; i < count; i++)
+        {
+            window.Clear();
+            for (var j = Math.Max(0, i - SmoothReach); j <= Math.Min(count - 1, i + SmoothReach); j++)
+                window.Add(floor[j]);
+            window.Sort();
+            median[i] = window[window.Count / 2];
+        }
+
+        // 3. Steps make a sawtooth: a triangle-weighted average over about 1.5 y each way, kept just above
+        //    the median floor and never far over it.
+        for (var i = 0; i < count; i++)
+        {
+            float sum = 0f, weights = 0f;
+            for (var k = -SmoothReach; k <= SmoothReach; k++)
+            {
+                var j = i + k;
+                if (j < 0 || j >= count)
+                    continue;
+                var w = SmoothReach + 1 - Math.Abs(k);
+                sum += median[j] * w;
+                weights += w;
+            }
+            var y = Math.Clamp(sum / weights, median[i] - 0.05f, median[i] + 0.45f);
+            curve[i] = new Vector3(curve[i].X, y, curve[i].Z);
+        }
+    }
+
+    // Highest real surface at or just above the navmesh height: skips wall tops and posts above it.
+    // The surface closest to `expected`: every surface a ray down from above crosses, nearest height wins.
+    // None within GroundAccept means a gap or a drop the chain cannot follow; that point is filled in later.
+    private static float? FloorNear(float x, float z, float expected)
+    {
+        var top = expected + GroundAbove;
+        var bottom = expected - GroundBelow;
+        float? best = null;
+        for (var attempt = 0; attempt < 4 && top > bottom; attempt++)
+        {
+            if (!BGCollisionModule.RaycastMaterialFilter(new Vector3(x, top, z), -Up, out var hit, top - bottom))
+                break;
+            var y = hit.Point.Y;
+            if (best is not { } b || MathF.Abs(y - expected) < MathF.Abs(b - expected))
+                best = y;
+            top = y - 0.05f;
+        }
+        return best is { } found && MathF.Abs(found - expected) <= GroundAccept ? found : null;
+    }
+
+    // Heights around the player for the log: mesh / floor found / drawn, every 2 y along the next 12 y.
+    public string GroundDebug { get; private set; } = "";
+
+    private string DescribeGround(Vector3 player, float start)
+    {
+        var parts = new List<string> { $"player y {player.Y:0.00}" };
+        for (var i = 0; i < curve.Count; i++)
+        {
+            if (arcs[i] < start || arcs[i] > start + 12f || (int)(arcs[i] * 2) % 4 != 0)
+                continue;
+            parts.Add($"@{arcs[i] - start:0}: mesh {meshHeight[i]:0.00} floor {(grounded[i] ? groundHeight[i].ToString("0.00") : "-")} drawn {curve[i].Y:0.00}");
+        }
+        return string.Join("; ", parts);
+    }
+
+    private const int FillReach = 8;
+    private const int SmoothReach = 3;
+
+    private float[] groundHeight = [];
+
+    // Evenly spaced points so every piece of the route can be put on the ground.
+    private static List<Vector3> Densify(List<Vector3> points, float step)
+    {
+        if (points.Count < 2)
+            return points;
+        var result = new List<Vector3> { points[0] };
+        for (var i = 1; i < points.Count; i++)
+        {
+            var a = points[i - 1];
+            var b = points[i];
+            var pieces = (int)MathF.Ceiling(Vector3.Distance(a, b) / step);
+            for (var k = 1; k <= pieces; k++)
+                result.Add(Vector3.Lerp(a, b, (float)k / pieces));
+        }
+        return result;
     }
 
     private Vector3 PositionAt(float arc)
@@ -193,7 +380,50 @@ internal sealed class PathRenderer
         var vis = 1f;
         if (config.HideBehindWalls && s.Arc > AlwaysVisibleNear && camera is { } cam)
             vis = Visibility(Cell(s.Pos), cam, s.Pos, dt);
-        return config.Opacity * vis * distanceFade * nearFade;
+        return config.Opacity * vis * distanceFade * nearFade * PlayerCover(s.Pos);
+    }
+
+    // The player model is not in the world collision the wall check uses, so the overlay would be drawn over it.
+    // The character is treated as an upright capsule on screen: route behind it (further from the camera) fades
+    // out across its silhouette, with a soft edge.
+    private const float BodyRadius = 0.42f;
+    private const float BodyHeight = 1.85f;
+    private bool coverReady;
+    private Vector2 coverFeet;
+    private Vector2 coverHead;
+    private float coverRadius;
+    private float coverDepth;
+    private Vector3 coverCamera;
+
+    private void PrepareCover(Vector3 player, Vector3? camera)
+    {
+        coverReady = false;
+        if (camera is not { } cam)
+            return;
+        var toPlayer = player - cam;
+        var flat = new Vector3(toPlayer.X, 0, toPlayer.Z);
+        if (flat.LengthSquared() < 1e-4f)
+            return;
+        var side = Vector3.Normalize(Vector3.Cross(Up, flat));
+        var middle = player + Up * (BodyHeight * 0.5f);
+        if (!Project(player + Up * 0.1f, out coverFeet) || !Project(player + Up * BodyHeight, out coverHead)
+            || !Project(middle, out var centre) || !Project(middle + side * BodyRadius, out var edge))
+            return;
+        coverRadius = Vector2.Distance(centre, edge);
+        coverDepth = Vector3.Distance(cam, middle);
+        coverCamera = cam;
+        coverReady = coverRadius > 1f;
+    }
+
+    private float PlayerCover(Vector3 point)
+    {
+        if (!coverReady || Vector3.Distance(coverCamera, point) < coverDepth - BodyRadius || !Project(point + Up * 0.05f, out var screen))
+            return 1f;
+        var axis = coverHead - coverFeet;
+        var t = Math.Clamp(Vector2.Dot(screen - coverFeet, axis) / MathF.Max(axis.LengthSquared(), 1f), 0f, 1f);
+        var distance = Vector2.Distance(screen, coverFeet + axis * t);
+        // Fully hidden inside 80% of the radius, back to full strength just past the outline.
+        return Math.Clamp((distance - coverRadius * 0.8f) / (coverRadius * 0.4f), 0f, 1f);
     }
 
     private static (int, int, int) Cell(Vector3 p) =>
@@ -269,40 +499,65 @@ internal sealed class PathRenderer
         return ImGui.GetColorU32(new Vector4(rgb, Math.Clamp(alpha, 0f, 1f)));
     }
 
+    // Positions across the ribbon (-1 = left edge, 1 = right edge). Colour is set per vertex and the GPU blends it
+    // between them, so the falloff from the bright centre line to the faint edges is a smooth gradient.
+    private static readonly float[] Across = [-1f, -0.7f, -0.45f, -0.25f, -0.1f, 0f, 0.1f, 0.25f, 0.45f, 0.7f, 1f];
+
     private void DrawRibbon(ImDrawListPtr drawList, List<Sample> samples, float[] alphas)
     {
         var half = config.Width * 0.5f;
         var lift = Up * 0.05f;
-        for (var i = 0; i < samples.Count - 1; i++)
+        var uv = ImGui.GetFontTexUvWhitePixel();
+        var lanes = Across.Length;
+
+        // Opacity and whitening per lane: a soft glow with a brighter, whiter core.
+        var opacity = new float[lanes];
+        var whiten = new float[lanes];
+        for (var k = 0; k < lanes; k++)
         {
-            var alpha = MathF.Min(alphas[i], alphas[i + 1]);
-            if (alpha < 0.01f)
-                continue;
-            var a = samples[i];
-            var b = samples[i + 1];
-            var ra = Vector3.Cross(a.Dir, Up);
-            var rb = Vector3.Cross(b.Dir, Up);
-
-            // Stacked bands fake a soft falloff from the centre line to the edges.
-            foreach (var (widthScale, opacity, whiten) in Bands)
-                DrawBand(drawList, a.Pos + lift, b.Pos + lift, ra * half * widthScale, rb * half * widthScale, Colour(alpha * opacity, whiten));
+            var t = Across[k];
+            opacity[k] = 0.5f * MathF.Exp(-3f * t * t);
+            whiten[k] = 0.5f * MathF.Exp(-10f * t * t);
         }
-    }
 
-    private static readonly (float Width, float Opacity, float Whiten)[] Bands =
-    [
-        (1.00f, 0.035f, 0f),
-        (0.78f, 0.045f, 0f),
-        (0.56f, 0.06f, 0.05f),
-        (0.36f, 0.08f, 0.15f),
-        (0.18f, 0.12f, 0.3f),
-        (0.07f, 0.16f, 0.5f),
-    ];
+        var previous = new Vector2[lanes];
+        var current = new Vector2[lanes];
+        var havePrevious = false;
+        for (var i = 0; i < samples.Count; i++)
+        {
+            var s = samples[i];
+            var right = Vector3.Cross(s.Dir, Up) * half;
+            var ok = true;
+            for (var k = 0; k < lanes && ok; k++)
+                ok = Project(s.Pos + lift + right * Across[k], out current[k]);
+            if (!ok)
+            {
+                havePrevious = false;
+                continue;
+            }
 
-    private static void DrawBand(ImDrawListPtr drawList, Vector3 a, Vector3 b, Vector3 ra, Vector3 rb, uint colour)
-    {
-        if (Project(a - ra, out var p1) && Project(b - rb, out var p2) && Project(b + rb, out var p3) && Project(a + ra, out var p4))
-            drawList.AddQuadFilled(p1, p2, p3, p4, colour);
+            var alphaA = i > 0 ? alphas[i - 1] : 0f;
+            var alphaB = alphas[i];
+            if (havePrevious && (alphaA > 0.01f || alphaB > 0.01f))
+            {
+                drawList.PrimReserve((lanes - 1) * 6, (lanes - 1) * 6);
+                for (var k = 0; k < lanes - 1; k++)
+                {
+                    var a0 = Colour(alphaA * opacity[k], whiten[k]);
+                    var a1 = Colour(alphaA * opacity[k + 1], whiten[k + 1]);
+                    var b0 = Colour(alphaB * opacity[k], whiten[k]);
+                    var b1 = Colour(alphaB * opacity[k + 1], whiten[k + 1]);
+                    drawList.PrimVtx(previous[k], uv, a0);
+                    drawList.PrimVtx(current[k], uv, b0);
+                    drawList.PrimVtx(current[k + 1], uv, b1);
+                    drawList.PrimVtx(previous[k], uv, a0);
+                    drawList.PrimVtx(current[k + 1], uv, b1);
+                    drawList.PrimVtx(previous[k + 1], uv, a1);
+                }
+            }
+            (previous, current) = (current, previous);
+            havePrevious = true;
+        }
     }
 
     // Chevrons sit at fixed spacing along the world curve and slide continuously with time, so they glide

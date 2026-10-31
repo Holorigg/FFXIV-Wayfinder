@@ -83,6 +83,7 @@ public sealed class Plugin : IDalamudPlugin
     // Whether the last path was asked for in the air, so a mount/dismount re-plans it.
     private bool pathFlying;
     private DateTime nextMapTrace;
+    private DateTime nextGroundTrace;
     // Spots of the current quest step already walked to, keyed by quest and step.
     private (ushort Quest, byte Sequence) visitedKey;
     private readonly HashSet<int> visited = [];
@@ -366,7 +367,13 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var speed = config.ShowEta ? (Condition[ConditionFlag.Mounted] ? MountSpeed : RunSpeed) : 0f;
+        renderer.SetFlying(pathFlying);
         renderer.Draw(from, points, to, targetLabel, Hint, markerLabel, speed, otherSpots);
+        if (now >= nextGroundTrace)
+        {
+            nextGroundTrace = now + TimeSpan.FromSeconds(3);
+            Trace($"ground: {renderer.GroundDebug}", "ground");
+        }
         if (config.ShowOnMinimap)
         {
             minimap.Draw(from, points, to, MapSizeFactor());
