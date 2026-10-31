@@ -23,11 +23,14 @@ internal sealed class Teleports
 
     // Prefers an aetheryte in the goal's own zone; otherwise the one fewest zone transitions away
     // (Limsa's Upper Decks has no aetheryte of its own, the Lower Decks one is a single hop).
+    // Only aetherytes that land fewer zone transitions from the goal than the player already is: next door to the
+    // Waking Sands, a teleport to Ul'dah would only move them further away.
     public TeleportOption? Best(uint territory, Vector2 goal, ZoneLinks links, uint here)
     {
         RefreshIfDue();
         TeleportOption? best = null;
-        var bestHops = int.MaxValue;
+        var hopsFromHere = links.Hops(here, territory, 4);
+        var bestHops = hopsFromHere > 0 ? hopsFromHere - 1 : int.MaxValue;
         var bestDistance = float.MaxValue;
         foreach (var entry in unlocked)
         {
