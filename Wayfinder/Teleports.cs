@@ -18,8 +18,34 @@ internal sealed class Teleports
     private readonly ExcelSheet<Aetheryte> aetherytes;
     private readonly List<(uint Aetheryte, byte SubIndex, uint Territory, uint Cost)> unlocked = [];
     private DateTime nextRefresh;
+    // Where each aetheryte stands. The Aetheryte sheet's Level reference is empty for them (Horizon has none), so
+    // positions come from the map icon that points at the aetheryte (MapMarker DataType 3).
+    private readonly Dictionary<uint, Vector2> positions = [];
 
-    public Teleports(IDataManager data) => aetherytes = data.GetExcelSheet<Aetheryte>();
+    public Teleports(IDataManager data)
+    {
+        aetherytes = data.GetExcelSheet<Aetheryte>();
+        var markers = data.GetSubrowExcelSheet<MapMarker>();
+        foreach (var map in data.GetExcelSheet<Lumina.Excel.Sheets.Map>())
+        {
+            if (map.MapMarkerRange == 0 || !markers.TryGetRow(map.MapMarkerRange, out var rows))
+                continue;
+            var scale = map.SizeFactor / 100f;
+            foreach (var marker in rows)
+            {
+                if (marker.DataType != 3 || !aetherytes.TryGetRow(marker.DataKey.RowId, out var row)
+                    || row.Territory.RowId != map.TerritoryType.RowId || positions.ContainsKey(row.RowId))
+                    continue;
+                positions[row.RowId] = new Vector2((marker.X - 1024f) / scale - map.OffsetX, (marker.Y - 1024f) / scale - map.OffsetY);
+            }
+        }
+    }
+
+    public int PositionCount => positions.Count;
+
+    private Vector2? PositionOf(uint aetheryte, Aetheryte row) =>
+        positions.TryGetValue(aetheryte, out var xz) ? xz
+        : row.Level.Count > 0 && row.Level[0].ValueNullable is { } level ? new Vector2(level.X, level.Z) : null;
 
     // Prefers an aetheryte in the goal's own zone; otherwise the one fewest zone transitions away
     // (Limsa's Upper Decks has no aetheryte of its own, the Lower Decks one is a single hop).
@@ -40,8 +66,8 @@ internal sealed class Teleports
             var hops = links.Hops(entry.Territory, territory, 2);
             if (hops < 0 || hops > bestHops)
                 continue;
-            var distance = hops == 0 && row.Level.Count > 0 && row.Level[0].ValueNullable is { } level
-                ? Vector2.Distance(new Vector2(level.X, level.Z), goal)
+            var distance = hops == 0 && PositionOf(entry.Aetheryte, row) is { } at
+                ? Vector2.Distance(at, goal)
                 : float.MaxValue / 2;
             if (hops == bestHops && distance >= bestDistance)
                 continue;
@@ -51,6 +77,29 @@ internal sealed class Teleports
         }
         return best;
     }
+
+    // A teleport inside the zone the player is in: worth it when an aetheryte here lands much closer to the goal
+    // (across Western Thanalan to Horizon, next to the Waking Sands). Straight lines, inflated like walking.
+    public TeleportOption? InZone(uint here, Vector2 player, Vector2 goal, float minSaving, out float saving)
+    {
+        RefreshIfDue();
+        saving = 0;
+        TeleportOption? best = null;
+        var walk = Vector2.Distance(player, goal) * Winding;
+        foreach (var entry in unlocked)
+        {
+            if (entry.Territory != here || !aetherytes.TryGetRow(entry.Aetheryte, out var row) || PositionOf(entry.Aetheryte, row) is not { } at)
+                continue;
+            var left = Vector2.Distance(at, goal) * Winding;
+            if (walk - left < minSaving || walk - left <= saving)
+                continue;
+            saving = walk - left;
+            best = new TeleportOption(entry.Aetheryte, entry.SubIndex, row.PlaceName.ValueNullable?.Name.ExtractText() ?? $"Aetheryte {entry.Aetheryte}", entry.Cost);
+        }
+        return best;
+    }
+
+    private const float Winding = 1.3f;
 
     public static unsafe bool Teleport(TeleportOption option)
     {

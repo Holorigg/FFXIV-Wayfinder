@@ -71,7 +71,11 @@ internal sealed class QuestTargets
     {
         if (level.RowId == 0 || level.ValueNullable is not { } value || value.Territory.RowId == 0)
             return;
-        result.Add(new QuestLocation(value.Territory.RowId, new Vector3(value.X, value.Y, value.Z)));
+        var position = new Vector3(value.X, value.Y, value.Z);
+        // Several objectives of one step can share a spot ("speak to X" three times); that is one place to go.
+        if (result.Exists(l => l.Territory == value.Territory.RowId && Vector3.Distance(l.Position, position) < 2f))
+            return;
+        result.Add(new QuestLocation(value.Territory.RowId, position));
     }
 
     public string NameOfRow(uint row) => Name((ushort)(row & 0xFFFF));

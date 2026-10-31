@@ -105,7 +105,7 @@ public sealed class Plugin : IDalamudPlugin
         landmarks = new Landmarks(DataManager);
         currents = new AetherCurrents(DataManager);
         Log.Information("[Wayfinder] landmarks: {List}", string.Join(", ", Enum.GetValues<LandmarkKind>().Select(k => $"{k} {landmarks.Count(k)}")));
-        Log.Information("[Wayfinder] {Count} aethernet shards, {Currents} aether currents loaded", aethernet.Count, currents.Count);
+        Log.Information("[Wayfinder] {Count} aethernet shards, {Currents} aether currents, {Aetherytes} aetheryte positions loaded", aethernet.Count, currents.Count, teleports.PositionCount);
         configWindow = new ConfigWindow(config, SaveConfig, this);
         windows.AddWindow(configWindow);
         renderer = new PathRenderer(config);
@@ -726,7 +726,10 @@ public sealed class Plugin : IDalamudPlugin
         var exact = destination.Exact;
         var sameZone = destination.Territory == ClientState.TerritoryType;
         // Walking is always drawn; a teleport is only suggested, the player decides whether the gil is worth it.
-        Teleport = !sameZone && config.ShowTeleportHint ? teleports.Best(destination.Territory, destination.Xz, links, ClientState.TerritoryType) : null;
+        Teleport = !config.ShowTeleportHint ? null
+            : !sameZone ? teleports.Best(destination.Territory, destination.Xz, links, ClientState.TerritoryType)
+            // In a big field zone an aetheryte next to the goal can save most of the walk.
+            : teleports.InZone(ClientState.TerritoryType, new Vector2(from.X, from.Z), destination.Xz, config.TeleportMinWalk * 0.6f, out _);
         Trace(Teleport is { } tp ? $"teleport hint: {tp.Name} ({tp.Cost} gil)" : "no teleport hint", "teleport");
         var label = destination.Label;
         Step = null;
@@ -772,8 +775,15 @@ public sealed class Plugin : IDalamudPlugin
                 marker = exit.Name;
             }
 
-            // A teleport for a short walk is noise: only suggest it past the configured walking distance.
-            if (exitCost + CrossZoneAllowance < config.TeleportMinWalk)
+            // A teleport for a short walk is noise: only suggest it past the configured walking distance. The walk
+            // is the way to this exit plus what lies behind it: into the next zone and across to the goal when
+            // that is the goal's zone (Ul'dah's gate is close, Horizon is a long way into Western Thanalan),
+            // a flat allowance per zone otherwise.
+            var hopsLeft = links.Hops(ClientState.TerritoryType, destination.Territory, 6);
+            var beyond = hopsLeft == 1 && links.ArrivalIn(destination.Territory, ClientState.TerritoryType) is { } arrival
+                ? Vector2.Distance(arrival, destination.Xz) * 1.3f
+                : CrossZoneAllowance * Math.Max(1, hopsLeft);
+            if (exitCost + beyond < config.TeleportMinWalk)
                 Teleport = null;
         }
 

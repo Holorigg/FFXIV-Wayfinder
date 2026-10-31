@@ -205,6 +205,15 @@ internal sealed class ZoneLinks
         return depth.TryGetValue(goal, out var hops) ? hops : -1;
     }
 
+    // Where you come out in `zone` when arriving from `from`: its own exit leading back there, if it has one.
+    public Vector2? ArrivalIn(uint zone, uint from)
+    {
+        if (!exits.TryGetValue(zone, out var list))
+            return null;
+        var back = list.Find(e => e.To == from && e.Via == null);
+        return back?.Xz;
+    }
+
     // Exits out of `from` that start a shortest (fewest zones) route to `goal`.
     public List<ZoneExit> FirstHops(uint from, uint goal)
     {
