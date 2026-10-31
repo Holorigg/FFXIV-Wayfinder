@@ -5,16 +5,29 @@ using Lumina.Excel.Sheets;
 
 namespace Wayfinder;
 
+internal enum LandmarkKind
+{
+    MarketBoard,
+    Mender,
+}
+
 internal readonly record struct Landmark(uint Territory, Vector2 Xz, bool Housing);
 
-// Fixed services drawn as icons on the area maps. A board stand shows as several icons close together;
-// any of them is a fine destination.
+// Fixed services drawn as icons on the area maps. A stand (several boards, a mender with an assistant) shows as
+// icons close together; any of them is a fine destination.
 internal sealed class Landmarks
 {
-    private const ushort MarketBoardIcon = 60570;
+    // Map icon ids: 60570 market board; 60434 mender (checked against menders whose position is in the Level sheet).
+    private static readonly Dictionary<ushort, LandmarkKind> Icons = new()
+    {
+        [60570] = LandmarkKind.MarketBoard,
+        [60434] = LandmarkKind.Mender,
+    };
+
     // TerritoryIntendedUse of the residential wards (Mist, The Goblet, Lavender Beds, ...).
     private const uint HousingWard = 13;
-    private readonly List<Landmark> marketBoards = [];
+
+    private readonly Dictionary<LandmarkKind, List<Landmark>> places = [];
 
     public Landmarks(IDataManager data)
     {
@@ -26,43 +39,47 @@ internal sealed class Landmarks
             if (territory == 0 || map.MapMarkerRange == 0 || !markers.TryGetRow(map.MapMarkerRange, out var rows))
                 continue;
             var scale = map.SizeFactor / 100f;
+            var housing = territories.TryGetRow(territory, out var zone) && zone.TerritoryIntendedUse.RowId == HousingWard;
             foreach (var marker in rows)
             {
-                if (marker.Icon != MarketBoardIcon)
+                if (!Icons.TryGetValue(marker.Icon, out var kind))
                     continue;
                 var xz = new Vector2((marker.X - 1024f) / scale - map.OffsetX, (marker.Y - 1024f) / scale - map.OffsetY);
-                var housing = territories.TryGetRow(territory, out var zone) && zone.TerritoryIntendedUse.RowId == HousingWard;
-                marketBoards.Add(new Landmark(territory, xz, housing));
+                if (!places.TryGetValue(kind, out var list))
+                    places[kind] = list = [];
+                list.Add(new Landmark(territory, xz, housing));
             }
         }
     }
 
-    public int MarketBoardCount => marketBoards.Count;
+    public int Count(LandmarkKind kind) => places.TryGetValue(kind, out var list) ? list.Count : 0;
 
-    // Nearest board: in this zone by straight line, otherwise in the zone the fewest exits away.
-    // A residential ward only wins when no city board is reachable: it sits behind a gate next to the city
-    // and is just as few exits away, but it is never where you want to shop.
-    public Landmark? NearestMarketBoard(uint here, Vector2 player, ZoneLinks links)
+    // Nearest place: in this zone by straight line, otherwise in the zone the fewest exits away.
+    // A residential ward only wins when nothing in a public zone is reachable: it sits behind a gate next to the
+    // city and is just as few exits away, but it is never where you want to go.
+    public Landmark? Nearest(LandmarkKind kind, uint here, Vector2 player, ZoneLinks links)
     {
+        if (!places.TryGetValue(kind, out var list))
+            return null;
         var hops = links.DistancesFrom(here, 6);
-        return Nearest(hops, player, here, housing: false) ?? Nearest(hops, player, here, housing: true);
+        return Nearest(list, hops, player, here, housing: false) ?? Nearest(list, hops, player, here, housing: true);
     }
 
-    private Landmark? Nearest(Dictionary<uint, int> hops, Vector2 player, uint here, bool housing)
+    private static Landmark? Nearest(List<Landmark> list, Dictionary<uint, int> hops, Vector2 player, uint here, bool housing)
     {
         Landmark? best = null;
         var bestHops = int.MaxValue;
         var bestDistance = float.MaxValue;
-        foreach (var board in marketBoards)
+        foreach (var place in list)
         {
-            if (board.Housing != housing && board.Territory != here)
+            if (place.Housing != housing && place.Territory != here)
                 continue;
-            if (!hops.TryGetValue(board.Territory, out var h) || h > bestHops)
+            if (!hops.TryGetValue(place.Territory, out var h) || h > bestHops)
                 continue;
-            var distance = h == 0 ? Vector2.Distance(board.Xz, player) : 0f;
+            var distance = h == 0 ? Vector2.Distance(place.Xz, player) : 0f;
             if (h == bestHops && distance >= bestDistance)
                 continue;
-            best = board;
+            best = place;
             bestHops = h;
             bestDistance = distance;
         }

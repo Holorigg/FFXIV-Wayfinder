@@ -34,6 +34,10 @@ internal sealed class ConfigWindow : Window
         if (ImGui.Button(Loc.T("ui.market-button")))
             plugin.SetMode(WayMode.MarketBoard, config.QuestId);
         Tip("ui.market-tip");
+        ImGui.SameLine();
+        if (ImGui.Button(Loc.T("ui.mender-button")))
+            plugin.SetMode(WayMode.Mender, config.QuestId);
+        Tip("ui.mender-tip");
 
         ImGui.Separator();
         ImGui.TextUnformatted(Loc.T("ui.lead"));
@@ -45,6 +49,9 @@ internal sealed class ConfigWindow : Window
         ImGui.SameLine();
         if (ImGui.RadioButton(Loc.T("ui.mode.market"), config.Mode == WayMode.MarketBoard) && config.Mode != WayMode.MarketBoard)
             plugin.SetMode(WayMode.MarketBoard, config.QuestId);
+        ImGui.SameLine();
+        if (ImGui.RadioButton(Loc.T("ui.mode.mender"), config.Mode == WayMode.Mender) && config.Mode != WayMode.Mender)
+            plugin.SetMode(WayMode.Mender, config.QuestId);
 
         if (config.Mode == WayMode.Flag)
             ImGui.TextDisabled(Loc.T("ui.flag-tip"));

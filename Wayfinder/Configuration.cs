@@ -10,6 +10,7 @@ public enum WayMode
     Flag,
     Quest,
     MarketBoard,
+    Mender,
 }
 
 [Serializable]
