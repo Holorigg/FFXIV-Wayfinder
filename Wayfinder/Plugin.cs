@@ -499,7 +499,7 @@ public sealed class Plugin : IDalamudPlugin
         var exact = destination.Exact;
         var sameZone = destination.Territory == ClientState.TerritoryType;
         // Walking is always drawn; a teleport is only suggested, the player decides whether the gil is worth it.
-        Teleport = !sameZone && config.ShowTeleportHint ? teleports.Best(destination.Territory, destination.Xz, links) : null;
+        Teleport = !sameZone && config.ShowTeleportHint ? teleports.Best(destination.Territory, destination.Xz, links, ClientState.TerritoryType) : null;
         Trace(Teleport is { } tp ? $"teleport hint: {tp.Name} ({tp.Cost} gil)" : "no teleport hint", "teleport");
         var label = destination.Label;
         Step = null;

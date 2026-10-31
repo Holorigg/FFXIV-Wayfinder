@@ -23,7 +23,7 @@ internal sealed class Teleports
 
     // Prefers an aetheryte in the goal's own zone; otherwise the one fewest zone transitions away
     // (Limsa's Upper Decks has no aetheryte of its own, the Lower Decks one is a single hop).
-    public TeleportOption? Best(uint territory, Vector2 goal, ZoneLinks links)
+    public TeleportOption? Best(uint territory, Vector2 goal, ZoneLinks links, uint here)
     {
         RefreshIfDue();
         TeleportOption? best = null;
@@ -31,7 +31,8 @@ internal sealed class Teleports
         var bestDistance = float.MaxValue;
         foreach (var entry in unlocked)
         {
-            if (!aetherytes.TryGetRow(entry.Aetheryte, out var row))
+            // Teleporting into the zone you are standing in only costs gil.
+            if (entry.Territory == here || !aetherytes.TryGetRow(entry.Aetheryte, out var row))
                 continue;
             var hops = links.Hops(entry.Territory, territory, 2);
             if (hops < 0 || hops > bestHops)

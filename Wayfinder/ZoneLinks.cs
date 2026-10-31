@@ -7,7 +7,7 @@ namespace Wayfinder;
 
 internal sealed record ZoneExit(uint From, uint To, Vector2 Xz, string Name);
 
-// Zone transitions come from the red map-link arrows: MapMarker rows with DataType 1 point at another Map.
+// Zone transitions come from the red map-link arrows: MapMarker rows with DataType 1 and an icon point at another Map.
 internal sealed class ZoneLinks
 {
     private readonly Dictionary<uint, List<ZoneExit>> exits = [];
@@ -25,7 +25,9 @@ internal sealed class ZoneLinks
             var scale = map.SizeFactor / 100f;
             foreach (var marker in rows)
             {
-                if (marker.DataType != 1 || !maps.TryGetRow(marker.DataKey.RowId, out var dest))
+                // Real exits carry the red arrow icon; icon-less links are just labels pointing at a neighbouring
+                // map (e.g. a closed door in New Gridania labelled "Central Shroud") and cannot be walked through.
+                if (marker.DataType != 1 || marker.Icon == 0 || !maps.TryGetRow(marker.DataKey.RowId, out var dest))
                     continue;
                 var to = dest.TerritoryType.RowId;
                 if (to == 0 || to == from)
