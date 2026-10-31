@@ -84,7 +84,7 @@ public sealed class Plugin : IDalamudPlugin
         renderer = new PathRenderer(config);
 
         links = new ZoneLinks(DataManager);
-        Log.Information("[Wayfinder] zone links loaded for {Count} territories", links.Count);
+        Log.Information("[Wayfinder] zone links loaded for {Count} territories, {Entrances} door entrances", links.Count, links.EntranceCount);
 
         navReady = PluginInterface.GetIpcSubscriber<bool>("vnavmesh.Nav.IsReady");
         flagToPoint = PluginInterface.GetIpcSubscriber<Vector3?>("vnavmesh.Query.Mesh.FlagToPoint");

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Plugin.Services;
@@ -35,14 +36,76 @@ internal sealed class ZoneLinks
 
                 var xz = new Vector2((marker.X - 1024f) / scale - map.OffsetX, (marker.Y - 1024f) / scale - map.OffsetY);
                 var name = dest.PlaceName.ValueNullable?.Name.ExtractText() ?? $"#{to}";
-                if (!exits.TryGetValue(from, out var list))
-                    exits[from] = list = [];
-                list.Add(new ZoneExit(from, to, xz, name));
+                Add(new ZoneExit(from, to, xz, name));
             }
         }
+
+        EntranceCount = AddEntrances(data);
     }
 
     public int Count => exits.Count;
+
+    public int EntranceCount { get; }
+
+    private void Add(ZoneExit exit)
+    {
+        if (!exits.TryGetValue(exit.From, out var list))
+            exits[exit.From] = list = [];
+        list.Add(exit);
+    }
+
+    // Interiors such as the Waking Sands have an exit arrow on their own map but no arrow leading in: the way in is
+    // a door object outside ("Waking Sands entrance" in Western Thanalan). For every one-way link inside -> outside,
+    // look in the outside zone for an EObj placed in the Level sheet whose name contains the interior's name.
+    private int AddEntrances(IDataManager data)
+    {
+        var missing = new List<(uint Inside, uint Outside, string Name)>();
+        var territories = data.GetExcelSheet<TerritoryType>();
+        foreach (var (inside, list) in exits)
+        {
+            foreach (var exit in list)
+            {
+                var outside = exit.To;
+                if (exits.TryGetValue(outside, out var back) && back.Exists(e => e.To == inside))
+                    continue;
+                if (missing.Exists(m => m.Inside == inside && m.Outside == outside))
+                    continue;
+                var name = territories.TryGetRow(inside, out var zone) ? zone.PlaceName.ValueNullable?.Name.ExtractText() : null;
+                if (string.IsNullOrEmpty(name))
+                    continue;
+                if (name.StartsWith("The ", StringComparison.OrdinalIgnoreCase))
+                    name = name[4..];
+                missing.Add((inside, outside, name));
+            }
+        }
+        if (missing.Count == 0)
+            return 0;
+
+        var wanted = new HashSet<uint>();
+        foreach (var m in missing)
+            wanted.Add(m.Outside);
+
+        var objectNames = data.GetExcelSheet<EObjName>();
+        var added = 0;
+        foreach (var level in data.GetExcelSheet<Level>())
+        {
+            // Type 45 = event object placed in the world.
+            if (level.Type != 45 || !wanted.Contains(level.Territory.RowId) || !objectNames.TryGetRow(level.Object.RowId, out var obj))
+                continue;
+            var objectName = obj.Singular.ExtractText();
+            if (string.IsNullOrEmpty(objectName))
+                continue;
+            foreach (var m in missing)
+            {
+                if (m.Outside != level.Territory.RowId || !objectName.Contains(m.Name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var placeName = territories.TryGetRow(m.Inside, out var zone) ? zone.PlaceName.ValueNullable?.Name.ExtractText() ?? m.Name : m.Name;
+                Add(new ZoneExit(m.Outside, m.Inside, new Vector2(level.X, level.Z), placeName));
+                added++;
+            }
+        }
+        return added;
+    }
 
     // Zone transitions from `from` to every territory reachable on foot within `limit` hops (itself = 0).
     public Dictionary<uint, int> DistancesFrom(uint from, int limit)
