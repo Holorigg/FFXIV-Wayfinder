@@ -48,6 +48,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] private static IDataManager DataManager { get; set; } = null!;
     [PluginService] private static IPluginLog Log { get; set; } = null!;
     [PluginService] private static ICondition Condition { get; set; } = null!;
+    [PluginService] private static IPartyList PartyList { get; set; } = null!;
 
     private readonly Configuration config;
     private readonly WindowSystem windows = new("Wayfinder");
@@ -58,6 +59,9 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Teleports teleports;
     private readonly Aethernet aethernet;
     private readonly Landmarks landmarks;
+    private readonly Attunement attunement;
+    private readonly NpcIndex npcs;
+    private readonly RewardHint rewardHint;
     private readonly AetherCurrents currents;
     private readonly MinimapOverlay minimap;
 
@@ -104,6 +108,11 @@ public sealed class Plugin : IDalamudPlugin
         aethernet = new Aethernet(DataManager);
         landmarks = new Landmarks(DataManager);
         currents = new AetherCurrents(DataManager);
+        attunement = new Attunement(DataManager);
+        npcs = new NpcIndex(DataManager);
+        rewardHint = new RewardHint(DataManager, config);
+        PathRenderer.Settings = config;
+        Log.Information("[Wayfinder] {Attune} attunement points, {Npcs} NPC spots indexed", attunement.Count, npcs.Count);
         Log.Information("[Wayfinder] landmarks: {List}", string.Join(", ", Enum.GetValues<LandmarkKind>().Select(k => $"{k} {landmarks.Count(k)}")));
         Log.Information("[Wayfinder] {Count} aethernet shards, {Currents} aether currents, {Aetherytes} aetheryte positions loaded", aethernet.Count, currents.Count, teleports.PositionCount);
         configWindow = new ConfigWindow(config, SaveConfig, this);
@@ -201,6 +210,18 @@ public sealed class Plugin : IDalamudPlugin
             case "skip":
                 SkipSpot();
                 return;
+            case "attune":
+                SetPlace(LandmarkKind.Unattuned);
+                return;
+            case "all":
+                SetMode(WayMode.AllQuests, config.QuestId);
+                return;
+            case "follow":
+                if (PartyNames() is { Count: > 0 } party)
+                    Follow(party[0]);
+                else
+                    Chat.Print($"[Wayfinder] {Loc.T("status.no-party")}");
+                return;
             case "mapdebug":
                 MapDebug.Dump(msg => Log.Information("[Wayfinder] {Message}", msg));
                 return;
@@ -254,8 +275,19 @@ public sealed class Plugin : IDalamudPlugin
     internal void SkipSpot()
     {
         if (chosenSpot >= 0)
+        {
             visited.Add(chosenSpot);
+            PersistVisited();
+        }
         nextQuery = DateTime.MinValue;
+    }
+
+    private void PersistVisited()
+    {
+        config.VisitedQuest = visitedKey.Quest;
+        config.VisitedSequence = visitedKey.Sequence;
+        config.VisitedSpots = [.. visited];
+        SaveConfig();
     }
 
     internal int SpotsLeft => config.Mode == WayMode.Quest ? otherSpots.Count + (chosenSpot >= 0 ? 1 : 0) : 0;
@@ -268,6 +300,12 @@ public sealed class Plugin : IDalamudPlugin
             return Loc.T("chat.nearest", Loc.T($"place.{config.Place}"));
         if (config.Mode == WayMode.AetherCurrent)
             return Loc.T("chat.currents");
+        if (config.Mode == WayMode.Party)
+            return Loc.T("chat.follow", config.FollowName);
+        if (config.Mode == WayMode.Npc)
+            return Loc.T("chat.npc", config.NpcLabel);
+        if (config.Mode == WayMode.AllQuests)
+            return Loc.T("chat.all");
         if (config.QuestId == 0)
             return SelectedQuest() is { } msq ? Loc.T("chat.msq", msq.Name) : Loc.T("chat.msq-none");
         return SelectedQuest() is { } q ? Loc.T("chat.quest", q.Name) : Loc.T("chat.quest-gone");
@@ -326,6 +364,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private void Draw()
     {
+        // Independent of the path: shown while a quest reward window is open.
+        if (config.RewardHint)
+            rewardHint.Draw(ObjectTable.LocalPlayer, questTargets);
         if (!config.Enabled)
             return;
         // Floor graphics would sit on top of the game's own AoE markers mid-fight.
@@ -468,6 +509,16 @@ public sealed class Plugin : IDalamudPlugin
         {
             var kind = config.Place;
             var name = Loc.T($"place.{kind}");
+            if (kind == LandmarkKind.Unattuned)
+            {
+                if (attunement.Nearest(ClientState.TerritoryType, new Vector2(from.X, from.Z), links) is not { } point)
+                {
+                    status = Loc.T("status.no-unattuned");
+                    Trace("no unattuned aetheryte reachable");
+                    return null;
+                }
+                return new Goal(point.Territory, point.Xz, null, Loc.T(point.Shard ? "attune.shard" : "attune.aetheryte", point.Name), false);
+            }
             Func<Landmark, bool>? filter = null;
             if (kind == LandmarkKind.Guild)
             {
@@ -510,10 +561,24 @@ public sealed class Plugin : IDalamudPlugin
             return new Goal(nearest.Territory, new Vector2(spot.X, spot.Z), spot, Loc.T("current", progress.Collected, progress.Total), false);
         }
 
-        var quest = SelectedQuest();
+        if (config.Mode == WayMode.Party)
+            return PartyGoal();
+
+        if (config.Mode == WayMode.Npc)
+        {
+            if (npcs.ByLevel(config.NpcLevel) is not { } npc)
+            {
+                status = Loc.T("status.no-npc");
+                return null;
+            }
+            return new Goal(npc.Territory, new Vector2(npc.Position.X, npc.Position.Z), npc.Position, npc.Name, false);
+        }
+
+        QuestEntry? quest = config.Mode == WayMode.AllQuests ? NearestQuest(from) : SelectedQuest();
         if (quest is not { } q)
         {
-            status = config.QuestId == 0 ? Loc.T("status.no-msq") : Loc.T("status.quest-gone");
+            status = config.Mode == WayMode.AllQuests ? Loc.T("status.no-quests")
+                : config.QuestId == 0 ? Loc.T("status.no-msq") : Loc.T("status.quest-gone");
             Trace("no quest to follow");
             return null;
         }
@@ -534,7 +599,11 @@ public sealed class Plugin : IDalamudPlugin
         {
             visitedKey = key;
             visited.Clear();
+            // Spots remembered from before a reload or restart, for this same quest step.
+            if (config.VisitedQuest == key.QuestId && config.VisitedSequence == key.Item2)
+                visited.UnionWith(config.VisitedSpots);
         }
+        var visitedBefore = visited.Count;
         var here = ClientState.TerritoryType;
         if (locations.Count > 1)
         {
@@ -549,15 +618,19 @@ public sealed class Plugin : IDalamudPlugin
             if (visited.Count >= locations.Count)
                 visited.Clear();
         }
+        if (visited.Count != visitedBefore)
+            PersistVisited();
 
+        var spotHops = links.DistancesFrom(here, 8);
         var best = -1;
         var bestDistance = float.MaxValue;
         for (var i = 0; i < locations.Count; i++)
         {
             if (visited.Contains(i))
                 continue;
-            // Spots in other zones rank after every spot in this one.
-            var d = locations[i].Territory == here ? Vector3.Distance(locations[i].Position, from) : float.MaxValue / 2;
+            // Spots in other zones rank after every spot in this one, the fewest zone transitions away first.
+            var d = locations[i].Territory == here ? Vector3.Distance(locations[i].Position, from)
+                : spotHops.TryGetValue(locations[i].Territory, out var h) ? 100000f * h : float.MaxValue / 2;
             if (best < 0 || d < bestDistance)
             {
                 best = i;
@@ -593,7 +666,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         if (locations.Count > 1)
-            label += Loc.T("spots", visited.Count + 1, locations.Count);
+            label += Loc.T("spots", locations.Count - visited.Count);
         return new Goal(next.Territory, new Vector2(next.Position.X, next.Position.Z), next.Position, label, false);
     }
 
@@ -618,6 +691,108 @@ public sealed class Plugin : IDalamudPlugin
             result.Add((obj.Position, obj.Name.TextValue));
         }
         return result;
+    }
+
+    // "Everything in the journal": the quest whose current step is closest, in this zone by distance, otherwise
+    // by zone transitions. Re-evaluated on every refresh, so finishing one moves on to the next nearest.
+    private QuestEntry? NearestQuest(Vector3 from)
+    {
+        var here = ClientState.TerritoryType;
+        var hops = links.DistancesFrom(here, 6);
+        QuestEntry? best = null;
+        var bestRank = float.MaxValue;
+        foreach (var quest in questTargets.List())
+        {
+            foreach (var spot in questTargets.Locations(quest))
+            {
+                var rank = spot.Territory == here
+                    ? Vector3.Distance(spot.Position, from)
+                    : hops.TryGetValue(spot.Territory, out var h) ? 10000f * h : float.MaxValue / 2;
+                if (rank < bestRank)
+                {
+                    bestRank = rank;
+                    best = quest;
+                }
+            }
+        }
+        QuestsInJournal = questTargets.List().Count;
+        return best;
+    }
+
+    internal int QuestsInJournal { get; private set; }
+
+    // ---------- party ----------
+
+    // Party members other than the player. A normal party knows each member's zone and position; a cross-world
+    // party only gives names, so such a member is found when they are close enough to be loaded.
+    internal unsafe List<string> PartyNames()
+    {
+        var names = new List<string>();
+        var self = ObjectTable.LocalPlayer?.Name.TextValue;
+        foreach (var member in PartyList)
+        {
+            var name = member.Name.TextValue;
+            if (name.Length > 0 && name != self && !names.Contains(name))
+                names.Add(name);
+        }
+        var cross = FFXIVClientStructs.FFXIV.Client.UI.Info.InfoProxyCrossRealm.Instance();
+        if (cross != null && cross->IsInCrossRealmParty)
+        {
+            for (var i = 0u; i < FFXIVClientStructs.FFXIV.Client.UI.Info.InfoProxyCrossRealm.GetGroupMemberCount(0); i++)
+            {
+                var member = FFXIVClientStructs.FFXIV.Client.UI.Info.InfoProxyCrossRealm.GetGroupMember(i, 0);
+                if (member == null)
+                    continue;
+                var name = member->NameString;
+                if (name.Length > 0 && name != self && !names.Contains(name))
+                    names.Add(name);
+            }
+        }
+        return names;
+    }
+
+    internal void Follow(string name)
+    {
+        config.FollowName = name;
+        SetMode(WayMode.Party, config.QuestId);
+    }
+
+    private Goal? PartyGoal()
+    {
+        var name = config.FollowName;
+        if (name.Length == 0)
+        {
+            status = Loc.T("status.no-follow");
+            return null;
+        }
+        // Loaded nearby: their live position.
+        foreach (var obj in ObjectTable)
+        {
+            if (obj is Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter && obj.Name.TextValue == name)
+                return new Goal(ClientState.TerritoryType, new Vector2(obj.Position.X, obj.Position.Z), obj.Position, name, false);
+        }
+        // Elsewhere: the party list knows their zone (normal parties only).
+        foreach (var member in PartyList)
+        {
+            if (member.Name.TextValue != name || member.Territory.RowId == 0)
+                continue;
+            var at = member.Position;
+            return new Goal(member.Territory.RowId, new Vector2(at.X, at.Z), member.Territory.RowId == ClientState.TerritoryType ? at : null, name, false);
+        }
+        status = Loc.T("status.follow-unknown", name);
+        Trace($"party member {name} not found", "party");
+        return null;
+    }
+
+    // ---------- NPC search ----------
+
+    internal List<NpcPlace> SearchNpcs(string text) => npcs.Search(text, ClientState.TerritoryType, links, 30);
+
+    internal void GoToNpc(NpcPlace npc)
+    {
+        config.NpcLevel = npc.Level;
+        config.NpcLabel = $"{npc.Name} ({npc.Zone})";
+        SetMode(WayMode.Npc, config.QuestId);
     }
 
     private QuestEntry? SelectedQuest()
@@ -757,6 +932,17 @@ public sealed class Plugin : IDalamudPlugin
 
     private void Refresh(Vector3 from)
     {
+        // Lift attendants and the like that only exist in the zone layout become exits once they are loaded.
+        var before = links.LiveAdded;
+        links.UpdateLive(ClientState.TerritoryType, ObjectTable
+            .Where(o => o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc)
+            .Select(o => (o.BaseId, new Vector2(o.Position.X, o.Position.Z))));
+        if (links.LiveAdded != before)
+        {
+            Trace($"{links.LiveAdded - before} transport NPCs found nearby", "live");
+            currentExit = null;
+        }
+
         if (ResolveGoal(from) is not { } destination)
         {
             ClearPath();

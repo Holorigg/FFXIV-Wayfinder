@@ -694,15 +694,27 @@ internal sealed class PathRenderer
         return v.LengthSquared() < 1f ? null : MathF.Atan2(v.X, -v.Y);
     }
 
+    // Set once by the plugin; the panel reads its size and position from it.
+    internal static Configuration? Settings;
+
     public static void DrawPill(string text, float? arrowAngle, string? hint = null)
     {
         var drawList = ImGui.GetBackgroundDrawList();
         var screen = ImGui.GetIO().DisplaySize;
-        var textSize = ImGui.CalcTextSize(text);
-        const float pad = 10f;
-        var arrowSpace = arrowAngle.HasValue ? 26f : 0f;
+        var scale = Math.Clamp(Settings?.PanelScale ?? 1f, 0.6f, 2.5f);
+        var font = ImGui.GetFont();
+        var fontSize = ImGui.GetFontSize() * scale;
+        Vector2 Measure(string s) => ImGui.CalcTextSize(s) * scale;
+        void Text(Vector2 at, uint colour, string s) => drawList.AddText(font, fontSize, at, colour, s);
+
+        var textSize = Measure(text);
+        var pad = 10f * scale;
+        var arrowSpace = arrowAngle.HasValue ? 26f * scale : 0f;
         var size = new Vector2(textSize.X + pad * 2 + arrowSpace, textSize.Y + pad * 1.2f);
-        var min = new Vector2((screen.X - size.X) * 0.5f, screen.Y * 0.075f);
+        // PanelX/PanelY place the panel's top centre as a fraction of the screen; kept fully on screen.
+        var centreX = screen.X * Math.Clamp(Settings?.PanelX ?? 0.5f, 0f, 1f);
+        var min = new Vector2(Math.Clamp(centreX - size.X * 0.5f, 0f, MathF.Max(0f, screen.X - size.X)),
+                              Math.Clamp(screen.Y * (Settings?.PanelY ?? 0.075f), 0f, MathF.Max(0f, screen.Y - size.Y)));
         var max = min + size;
         drawList.AddRectFilled(min, max, ImGui.GetColorU32(new Vector4(0.05f, 0.07f, 0.09f, 0.6f)), size.Y * 0.5f);
         drawList.AddRect(min, max, ImGui.GetColorU32(new Vector4(1, 1, 1, 0.12f)), size.Y * 0.5f, ImDrawFlags.None, 1f);
@@ -710,31 +722,31 @@ internal sealed class PathRenderer
         if (!string.IsNullOrEmpty(hint))
         {
             // First line is the instruction for right now (brighter), the rest are alternatives.
-            var y = max.Y + 5f;
+            var y = max.Y + 5f * scale;
             var first = true;
             foreach (var line in hint.Split('\n'))
             {
-                var lineSize = ImGui.CalcTextSize(line);
-                var linePos = new Vector2((screen.X - lineSize.X) * 0.5f, y);
+                var lineSize = Measure(line);
+                var linePos = new Vector2(Math.Clamp((min.X + max.X - lineSize.X) * 0.5f, 0f, MathF.Max(0f, screen.X - lineSize.X)), y);
                 var colour = first ? new Vector4(1f, 0.9f, 0.6f, 1f) : new Vector4(0.85f, 0.8f, 0.65f, 0.75f);
-                drawList.AddText(linePos + Vector2.One, ImGui.GetColorU32(new Vector4(0, 0, 0, 0.85f)), line);
-                drawList.AddText(linePos, ImGui.GetColorU32(colour), line);
-                y += lineSize.Y + 2f;
+                Text(linePos + Vector2.One, ImGui.GetColorU32(new Vector4(0, 0, 0, 0.85f)), line);
+                Text(linePos, ImGui.GetColorU32(colour), line);
+                y += lineSize.Y + 2f * scale;
                 first = false;
             }
         }
 
         if (arrowAngle is { } angle)
         {
-            var centre = new Vector2(min.X + pad + 9f, (min.Y + max.Y) * 0.5f);
+            var centre = new Vector2(min.X + pad + 9f * scale, (min.Y + max.Y) * 0.5f);
             var (sin, cos) = MathF.SinCos(angle);
-            Vector2 Rot(float x, float y) => centre + new Vector2(x * cos - y * sin, x * sin + y * cos);
+            Vector2 Rot(float x, float y) => centre + new Vector2(x * cos - y * sin, x * sin + y * cos) * scale;
             var colour = ImGui.GetColorU32(new Vector4(0.75f, 0.93f, 1f, 1f));
             drawList.AddTriangleFilled(Rot(0, -8), Rot(-6, 6), Rot(0, 2), colour);
             drawList.AddTriangleFilled(Rot(0, -8), Rot(0, 2), Rot(6, 6), colour);
         }
 
         var textPos = new Vector2(min.X + pad + arrowSpace, min.Y + pad * 0.6f);
-        drawList.AddText(textPos, ImGui.GetColorU32(new Vector4(0.92f, 0.97f, 1f, 1f)), text);
+        Text(textPos, ImGui.GetColorU32(new Vector4(0.92f, 0.97f, 1f, 1f)), text);
     }
 }

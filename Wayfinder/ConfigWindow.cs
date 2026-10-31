@@ -58,6 +58,13 @@ internal sealed class ConfigWindow : Window
         ImGui.SameLine();
         Mode(WayMode.AetherCurrent, "ui.mode.currents");
         Tip("ui.currents-tip");
+        Mode(WayMode.AllQuests, "ui.mode.all");
+        Tip("ui.all-tip");
+        ImGui.SameLine();
+        Mode(WayMode.Party, "ui.mode.party");
+        Tip("ui.party-tip");
+        ImGui.SameLine();
+        Mode(WayMode.Npc, "ui.mode.npc");
 
         if (config.Mode == WayMode.Flag)
             ImGui.TextDisabled(Loc.T("ui.flag-tip"));
@@ -65,6 +72,12 @@ internal sealed class ConfigWindow : Window
             DrawQuestList();
         else if (config.Mode == WayMode.AetherCurrent)
             DrawCurrents();
+        else if (config.Mode == WayMode.AllQuests)
+            ImGui.TextDisabled(Loc.T("ui.all-count", plugin.QuestsInJournal));
+        else if (config.Mode == WayMode.Party)
+            DrawParty();
+        else if (config.Mode == WayMode.Npc)
+            DrawNpcSearch();
 
         ImGui.Separator();
         var now = plugin.CurrentTarget;
@@ -84,6 +97,45 @@ internal sealed class ConfigWindow : Window
             DrawRouting();
         if (ImGui.CollapsingHeader($"{Loc.T("ui.look")}###look"))
             DrawLook();
+    }
+
+    private void DrawParty()
+    {
+        var names = plugin.PartyNames();
+        if (names.Count == 0)
+        {
+            ImGui.TextDisabled(Loc.T("ui.party-none"));
+            return;
+        }
+        foreach (var name in names)
+        {
+            if (ImGui.RadioButton($"{name}##party", config.FollowName == name) && config.FollowName != name)
+                plugin.Follow(name);
+        }
+    }
+
+    private string npcQuery = "";
+    private string lastQuery = "";
+    private System.Collections.Generic.List<NpcPlace> npcResults = [];
+
+    private void DrawNpcSearch()
+    {
+        ImGui.SetNextItemWidth(220);
+        ImGui.InputText(Loc.T("ui.npc-search"), ref npcQuery, 64);
+        Tip("ui.npc-hint");
+        if (npcQuery != lastQuery)
+        {
+            lastQuery = npcQuery;
+            npcResults = plugin.SearchNpcs(npcQuery);
+        }
+        if (npcQuery.Trim().Length >= 2 && npcResults.Count == 0)
+            ImGui.TextDisabled(Loc.T("ui.npc-none"));
+        foreach (var npc in npcResults)
+        {
+            var label = npc.Title.Length > 0 ? $"{npc.Name} <{npc.Title}> — {npc.Zone}" : $"{npc.Name} — {npc.Zone}";
+            if (ImGui.Selectable($"{label}##npc{npc.Level}", config.NpcLevel == npc.Level))
+                plugin.GoToNpc(npc);
+        }
     }
 
     private void Mode(WayMode mode, string key)
@@ -204,6 +256,11 @@ internal sealed class ConfigWindow : Window
         changed |= ImGui.Checkbox(Loc.T("ui.eta"), ref config.ShowEta);
         changed |= ImGui.Checkbox(Loc.T("ui.minimap"), ref config.ShowOnMinimap);
         Tip("ui.minimap-tip");
+        changed |= ImGui.SliderFloat(Loc.T("ui.panel-scale"), ref config.PanelScale, 0.6f, 2.5f, "%.1f");
+        changed |= ImGui.SliderFloat(Loc.T("ui.panel-x"), ref config.PanelX, 0f, 1f, "%.2f");
+        changed |= ImGui.SliderFloat(Loc.T("ui.panel-y"), ref config.PanelY, 0f, 0.95f, "%.2f");
+        changed |= ImGui.Checkbox(Loc.T("ui.reward"), ref config.RewardHint);
+        Tip("ui.reward-tip");
         changed |= ImGui.Checkbox(Loc.T("ui.combat"), ref config.HideInCombat);
         Tip("ui.combat-tip");
         changed |= ImGui.Checkbox(Loc.T("ui.duties"), ref config.HideInDuties);

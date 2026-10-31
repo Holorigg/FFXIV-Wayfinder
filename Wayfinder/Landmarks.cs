@@ -17,6 +17,8 @@ public enum LandmarkKind
     HuntBoard,
     Chocobokeep,
     Guild,
+    // Not a map icon: aetherytes and aethernet shards not attuned yet (see Attunement).
+    Unattuned,
 }
 
 internal readonly record struct Landmark(uint Territory, Vector2 Xz, bool Housing, string Label);

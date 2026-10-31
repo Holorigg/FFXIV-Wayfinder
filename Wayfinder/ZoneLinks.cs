@@ -127,30 +127,24 @@ internal sealed class ZoneLinks
     private int AddTransports(IDataManager data)
     {
         var territories = data.GetExcelSheet<TerritoryType>();
-        var npcs = data.GetExcelSheet<ENpcBase>();
         var residents = data.GetExcelSheet<ENpcResident>();
         var warps = data.GetExcelSheet<Warp>();
-        var seen = new HashSet<(uint, uint)>();
-        var added = 0;
 
         bool IsPublic(uint territory) => territories.TryGetRow(territory, out var zone) && PublicZones.Contains(zone.TerritoryIntendedUse.RowId);
 
-        foreach (var level in data.GetExcelSheet<Level>())
+        // Every NPC whose event list holds a named Warp into a public zone, whether or not the Level sheet places it:
+        // some (Ul'dah's lift attendant Nanahomi) only exist in the zone layout and are picked up live.
+        foreach (var npc in data.GetExcelSheet<ENpcBase>())
         {
-            // Type 8 = NPC placed in the world.
-            if (level.Type != 8 || !npcs.TryGetRow(level.Object.RowId, out var npc))
-                continue;
-            var from = level.Territory.RowId;
-            if (!IsPublic(from))
-                continue;
+            List<(uint, Transport)>? list = null;
             foreach (var handler in npc.ENpcData)
             {
                 if (handler.RowId >> 16 != 2 || !warps.TryGetRow(handler.RowId, out var warp))
                     continue;
                 var to = warp.TerritoryType.RowId;
                 var option = warp.Name.ExtractText();
-                // Unnamed warps are chocobo porters and innkeepers; same-zone ones are lifts to a landing.
-                if (string.IsNullOrEmpty(option) || to == from || !IsPublic(to) || !seen.Add((level.Object.RowId, warp.RowId)))
+                // Unnamed warps are chocobo porters and innkeepers.
+                if (string.IsNullOrEmpty(option) || !IsPublic(to))
                     continue;
 
                 var condition = warp.WarpCondition.ValueNullable;
@@ -163,18 +157,68 @@ internal sealed class ZoneLinks
                             quests.Add(quest);
                     }
                 }
-                var npcName = residents.TryGetRow(level.Object.RowId, out var resident) ? resident.Singular.ExtractText() : "";
+                var npcName = residents.TryGetRow(npc.RowId, out var resident) ? resident.Singular.ExtractText() : "";
                 if (npcName.Length > 0)
                     npcName = char.ToUpperInvariant(npcName[0]) + npcName[1..];
-                var name = territories.TryGetRow(to, out var zone) ? zone.PlaceName.ValueNullable?.Name.ExtractText() ?? $"#{to}" : $"#{to}";
                 // CompleteParam 2: any one of the listed quests (the airship pass comes from either of two quests).
-                var via = new Transport(npcName, option, condition?.Gil ?? 0, [.. quests], condition?.CompleteParam == 2);
-                Add(new ZoneExit(from, to, new Vector2(level.X, level.Z), name, via));
+                list ??= [];
+                list.Add((to, new Transport(npcName, option, condition?.Gil ?? 0, [.. quests], condition?.CompleteParam == 2)));
+            }
+            if (list != null)
+                warpNpcs[npc.RowId] = list;
+        }
+
+        var seen = new HashSet<(uint, uint)>();
+        var added = 0;
+        foreach (var level in data.GetExcelSheet<Level>())
+        {
+            // Type 8 = NPC placed in the world.
+            if (level.Type != 8 || !warpNpcs.TryGetValue(level.Object.RowId, out var list))
+                continue;
+            var from = level.Territory.RowId;
+            if (!IsPublic(from))
+                continue;
+            foreach (var (to, via) in list)
+            {
+                // Same-zone warps are lifts to a landing in the same zone.
+                if (to == from || !seen.Add((level.Object.RowId, to)))
+                    continue;
+                Add(new ZoneExit(from, to, new Vector2(level.X, level.Z), ZoneName(territories, to), via));
                 added++;
             }
         }
+        foreach (var row in territories)
+            zoneNames[row.RowId] = row.PlaceName.ValueNullable?.Name.ExtractText() ?? $"#{row.RowId}";
         return added;
     }
+
+    private static string ZoneName(Lumina.Excel.ExcelSheet<TerritoryType> territories, uint id) =>
+        territories.TryGetRow(id, out var zone) ? zone.PlaceName.ValueNullable?.Name.ExtractText() ?? $"#{id}" : $"#{id}";
+
+    private readonly Dictionary<uint, List<(uint To, Transport Via)>> warpNpcs = [];
+    private readonly Dictionary<uint, string> zoneNames = [];
+
+    // Transport NPCs currently loaded around the player (ENpc id, position). Ones without a Level row become
+    // exits of this zone until the player leaves it.
+    public void UpdateLive(uint zone, IEnumerable<(uint Npc, Vector2 Xz)> loaded)
+    {
+        if (!exits.TryGetValue(zone, out var list))
+            exits[zone] = list = [];
+        foreach (var (npc, xz) in loaded)
+        {
+            if (!warpNpcs.TryGetValue(npc, out var warps))
+                continue;
+            foreach (var (to, via) in warps)
+            {
+                if (to == zone || list.Exists(e => e.To == to && e.Via?.Npc == via.Npc && Vector2.Distance(e.Xz, xz) < 8f))
+                    continue;
+                list.Add(new ZoneExit(zone, to, xz, zoneNames.TryGetValue(to, out var name) ? name : $"#{to}", via));
+                LiveAdded++;
+            }
+        }
+    }
+
+    public int LiveAdded { get; private set; }
 
     // Zone transitions from `from` to every territory reachable within `limit` hops (itself = 0).
     public Dictionary<uint, int> DistancesFrom(uint from, int limit)

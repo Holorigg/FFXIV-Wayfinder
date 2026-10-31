@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Configuration;
 
@@ -13,6 +14,9 @@ public enum WayMode
     Nearest = 2,
     LegacyMender = 3,
     AetherCurrent = 4,
+    Party = 5,
+    Npc = 6,
+    AllQuests = 7,
 }
 
 [Serializable]
@@ -42,6 +46,17 @@ public sealed class Configuration : IPluginConfiguration
     public bool ShowEta = true;
     public bool MountHint = true;
     public float MountHintDistance = 150f;
+    public string FollowName = "";
+    public uint NpcLevel;
+    public string NpcLabel = "";
+    public float PanelScale = 1f;
+    public float PanelX = 0.5f;
+    public float PanelY = 0.075f;
+    public bool RewardHint;
+    // Spots of a multi-spot quest step already walked to, so a plugin reload does not send the player back.
+    public ushort VisitedQuest;
+    public byte VisitedSequence;
+    public List<int> VisitedSpots = [];
 
     public bool ExitByPathLength = true;
     public bool UseAethernet = true;

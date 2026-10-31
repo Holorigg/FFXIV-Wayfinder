@@ -100,6 +100,21 @@ internal sealed class QuestTargets
 
     public string NameOfRow(uint row) => Name((ushort)(row & 0xFFFF));
 
+    // The "choose one" rewards of a quest: item row and how many.
+    public List<(uint Item, uint Count)> OptionalRewards(QuestEntry quest)
+    {
+        var result = new List<(uint, uint)>();
+        if (!quests.TryGetRow(QuestRowOffset + quest.QuestId, out var row))
+            return result;
+        for (var i = 0; i < row.OptionalItemReward.Count; i++)
+        {
+            var item = row.OptionalItemReward[i].RowId;
+            if (item != 0)
+                result.Add((item, i < row.OptionalItemCountReward.Count ? Math.Max(1u, row.OptionalItemCountReward[i]) : 1u));
+        }
+        return result;
+    }
+
     private string Name(ushort questId) =>
         quests.TryGetRow(QuestRowOffset + questId, out var row) ? row.Name.ExtractText() : $"Quest {questId}";
 
