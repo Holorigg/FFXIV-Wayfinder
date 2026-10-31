@@ -574,9 +574,50 @@ public sealed class Plugin : IDalamudPlugin
 
         var next = locations[best];
         var label = q.Accepted ? q.Name : Loc.T("pick-up", q.Name);
+
+        // A search area: once nearby, lead to the quest's own NPCs around it that still carry a quest marker.
+        if (next.Area && next.Territory == here
+            && Vector2.Distance(new Vector2(next.Position.X, next.Position.Z), new Vector2(from.X, from.Z)) < AreaSearchDistance)
+        {
+            var marked = MarkedActors(questTargets.Actors(q), next.Position);
+            if (marked.Count > 0)
+            {
+                marked.Sort((a, b) => Vector3.Distance(a.Position, from).CompareTo(Vector3.Distance(b.Position, from)));
+                otherSpots = marked.Skip(1).Select(m => m.Position).ToList();
+                chosenSpot = -1;
+                Trace($"quest area: {marked.Count} marked NPCs, nearest {marked[0].Name}", "area");
+                return new Goal(here, new Vector2(marked[0].Position.X, marked[0].Position.Z), marked[0].Position,
+                    Loc.T("area-target", q.Name, marked[0].Name, marked.Count), false);
+            }
+            Trace("quest area: no marked NPCs in view", "area");
+        }
+
         if (locations.Count > 1)
             label += Loc.T("spots", visited.Count + 1, locations.Count);
         return new Goal(next.Territory, new Vector2(next.Position.X, next.Position.Z), next.Position, label, false);
+    }
+
+    // Search areas are wide (the Level radius of "speak to three people" covers Vesper Bay); NPCs further than this
+    // from its centre are not looked at.
+    private const float AreaSearchDistance = 200f;
+
+    private static unsafe List<(Vector3 Position, string Name)> MarkedActors(HashSet<uint> actors, Vector3 centre)
+    {
+        var result = new List<(Vector3, string)>();
+        if (actors.Count == 0)
+            return result;
+        foreach (var obj in ObjectTable)
+        {
+            if (!actors.Contains(obj.BaseId) || obj.Address == nint.Zero)
+                continue;
+            var native = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)obj.Address;
+            if (native->NamePlateIconId == 0)
+                continue;
+            if (Vector2.Distance(new Vector2(obj.Position.X, obj.Position.Z), new Vector2(centre.X, centre.Z)) > AreaSearchDistance)
+                continue;
+            result.Add((obj.Position, obj.Name.TextValue));
+        }
+        return result;
     }
 
     private QuestEntry? SelectedQuest()

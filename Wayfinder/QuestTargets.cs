@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Plugin.Services;
@@ -10,7 +11,8 @@ namespace Wayfinder;
 
 internal readonly record struct QuestEntry(ushort QuestId, string Name, bool Accepted, bool MainScenario);
 
-internal readonly record struct QuestLocation(uint Territory, Vector3 Position);
+// Area = the Level row is a search area (Type 51, "speak to three people around here"), not a placed NPC or object.
+internal readonly record struct QuestLocation(uint Territory, Vector3 Position, bool Area = false);
 
 // Quest objectives come from the Quest sheet: each TodoParams entry lists the Level rows (world positions)
 // that belong to the step whose sequence equals ToDoCompleteSeq. A quest not yet accepted points at its issuer.
@@ -75,7 +77,25 @@ internal sealed class QuestTargets
         // Several objectives of one step can share a spot ("speak to X" three times); that is one place to go.
         if (result.Exists(l => l.Territory == value.Territory.RowId && Vector3.Distance(l.Position, position) < 2f))
             return;
-        result.Add(new QuestLocation(value.Territory.RowId, position));
+        result.Add(new QuestLocation(value.Territory.RowId, position, value.Type == AreaLevelType));
+    }
+
+    private const byte AreaLevelType = 51;
+
+    // Every NPC and event object the quest script names (ACTORn, EOBJECTn). Inside a search area the ones the
+    // player still has to deal with carry a quest marker over their heads.
+    public HashSet<uint> Actors(QuestEntry quest)
+    {
+        var result = new HashSet<uint>();
+        if (!quests.TryGetRow(QuestRowOffset + quest.QuestId, out var row))
+            return result;
+        foreach (var param in row.QuestParams)
+        {
+            var instruction = param.ScriptInstruction.ExtractText();
+            if (param.ScriptArg != 0 && (instruction.StartsWith("ACTOR", StringComparison.Ordinal) || instruction.StartsWith("EOBJECT", StringComparison.Ordinal)))
+                result.Add(param.ScriptArg);
+        }
+        return result;
     }
 
     public string NameOfRow(uint row) => Name((ushort)(row & 0xFFFF));
