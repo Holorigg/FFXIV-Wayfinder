@@ -867,6 +867,10 @@ public sealed class Plugin : IDalamudPlugin
             floor ??= flagToPoint.InvokeFunc();
         floor ??= pointOnFloor.InvokeFunc(new Vector3(xz.X, 1024f, xz.Y), false, 5f);
         floor ??= nearestPoint.InvokeFunc(new Vector3(xz.X, from.Y, xz.Y), 10f, 50f);
+        // Zone exit arrows sit on the map edge, often a little past where the walkable mesh ends and far above or
+        // below the player (Western Thanalan's way to Central Thanalan: y 94 against the player's 21).
+        floor ??= pointOnFloor.InvokeFunc(new Vector3(xz.X, 1024f, xz.Y), false, 20f);
+        floor ??= nearestPoint.InvokeFunc(new Vector3(xz.X, from.Y, xz.Y), 25f, 300f);
         return floor;
     }
 
