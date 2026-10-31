@@ -577,11 +577,16 @@ public sealed class Plugin : IDalamudPlugin
                 Trace("navmesh not ready");
                 return;
             }
-            if (sameZone && destination.IsFlag)
-                floor = flagToPoint.InvokeFunc();
             // Quest spots have a real height; snapping near it avoids landing on a roof above a multi-floor city.
             if (exact is { } spot)
-                floor ??= nearestPoint.InvokeFunc(spot, 4f, 6f);
+                floor = nearestPoint.InvokeFunc(spot, 4f, 6f);
+            // Map icons and flags only have X/Z. Dropping from the sky lands on the topmost surface, which in
+            // Ul'dah is a balcony or roof above the NPC, so first look for floor at the player's own level:
+            // straight down from a little above their head, then sideways around that height.
+            floor ??= pointOnFloor.InvokeFunc(new Vector3(goal.X, from.Y + 3f, goal.Y), false, 4f);
+            floor ??= nearestPoint.InvokeFunc(new Vector3(goal.X, from.Y, goal.Y), 6f, 8f);
+            if (sameZone && destination.IsFlag)
+                floor ??= flagToPoint.InvokeFunc();
             floor ??= pointOnFloor.InvokeFunc(new Vector3(goal.X, 1024f, goal.Y), false, 5f);
             floor ??= nearestPoint.InvokeFunc(new Vector3(goal.X, from.Y, goal.Y), 10f, 50f);
         }
