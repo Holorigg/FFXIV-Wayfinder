@@ -3,7 +3,7 @@
     "Author": "holorigg",
     "Name": "Wayfinder",
     "InternalName": "Wayfinder",
-    "AssemblyVersion": "0.4.1.0",
+    "AssemblyVersion": "0.5.0.0",
     "Punchline": "GPS-style path on the ground to your map flag or quest objective.",
     "Description": "Draws the walking route on the ground to the map flag or to the current step of a quest, across zone exits, with city aethernet and teleport suggestions. Only draws; never moves the character. Requires vnavmesh (https://puni.sh/api/repository/veyn). Open with /way.",
     "ApplicableVersion": "any",
@@ -21,9 +21,9 @@
     "CanUnloadAsync": false,
     "LoadPriority": 0,
     "AcceptsFeedback": false,
-    "DownloadLinkInstall": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.4.1/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.4.1/latest.zip",
-    "DownloadLinkTesting": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.4.1/latest.zip",
-    "LastUpdate": 1793461027
+    "DownloadLinkInstall": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.5.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.5.0/latest.zip",
+    "DownloadLinkTesting": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.5.0/latest.zip",
+    "LastUpdate": 1793465830
   }
 ]
