@@ -12,7 +12,8 @@ namespace Wayfinder;
 internal readonly record struct QuestEntry(ushort QuestId, string Name, bool Accepted, bool MainScenario);
 
 // Area = the Level row is a search area (Type 51, "speak to three people around here"), not a placed NPC or object.
-internal readonly record struct QuestLocation(uint Territory, Vector3 Position, bool Area = false);
+// Objective = index of the step's todo entry this spot belongs to (several todos = several objectives in the tracker).
+internal readonly record struct QuestLocation(uint Territory, Vector3 Position, bool Area = false, int Objective = 0);
 
 // Quest objectives come from the Quest sheet: each TodoParams entry lists the Level rows (world positions)
 // that belong to the step whose sequence equals ToDoCompleteSeq. A quest not yet accepted points at its issuer.
@@ -56,20 +57,52 @@ internal sealed class QuestTargets
         }
 
         var sequence = QuestManager.GetQuestSequence(quest.QuestId);
+        var objective = 0;
         foreach (var todo in row.TodoParams)
         {
             if (todo.ToDoCompleteSeq != sequence)
                 continue;
             foreach (var level in todo.ToDoLocation)
-                AddLevel(result, level);
+                AddLevel(result, level, objective);
+            objective++;
         }
         return result;
+    }
+
+    // A step with several objectives (separate todo entries) ticks them off in the quest's 4th work variable, one
+    // bit per objective from the top: 0x80 the first, 0x40 the second... "A Hero in the Making" with Gridania and
+    // Ul'dah done read C0, matching the two checkmarks in the tracker.
+    public static unsafe bool ObjectiveDone(ushort questId, int objective)
+    {
+        var manager = QuestManager.Instance();
+        if (manager == null || objective is < 0 or > 7)
+            return false;
+        foreach (ref var work in manager->NormalQuests)
+        {
+            if (work.QuestId == questId)
+                return (work.Variables[3] & (0x80 >> objective)) != 0;
+        }
+        return false;
+    }
+
+    // The quest's work variables as hex, for the log: multi-spot steps keep their progress in them.
+    public static unsafe string Variables(ushort questId)
+    {
+        var manager = QuestManager.Instance();
+        if (manager == null)
+            return "";
+        foreach (ref var work in manager->NormalQuests)
+        {
+            if (work.QuestId == questId)
+                return $"{Convert.ToHexString(work.Variables)} flags {work.Flags:X2}";
+        }
+        return "";
     }
 
     public static unsafe byte Sequence(QuestEntry quest) =>
         quest.Accepted ? QuestManager.GetQuestSequence(quest.QuestId) : (byte)0;
 
-    private static void AddLevel(List<QuestLocation> result, RowRef<Level> level)
+    private static void AddLevel(List<QuestLocation> result, RowRef<Level> level, int objective = 0)
     {
         if (level.RowId == 0 || level.ValueNullable is not { } value || value.Territory.RowId == 0)
             return;
@@ -77,7 +110,7 @@ internal sealed class QuestTargets
         // Several objectives of one step can share a spot ("speak to X" three times); that is one place to go.
         if (result.Exists(l => l.Territory == value.Territory.RowId && Vector3.Distance(l.Position, position) < 2f))
             return;
-        result.Add(new QuestLocation(value.Territory.RowId, position, value.Type == AreaLevelType));
+        result.Add(new QuestLocation(value.Territory.RowId, position, value.Type == AreaLevelType, objective));
     }
 
     private const byte AreaLevelType = 51;

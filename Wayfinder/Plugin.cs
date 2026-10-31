@@ -595,6 +595,8 @@ public sealed class Plugin : IDalamudPlugin
         // mark it visited on arrival and move on to the next. The game does not say which ones are done, so
         // standing at a spot is taken as having dealt with it (/way skip moves on by hand).
         var key = (q.QuestId, QuestTargets.Sequence(q));
+        if (locations.Count > 1)
+            Trace($"quest {q.QuestId} seq {key.Item2} vars {QuestTargets.Variables(q.QuestId)}", "vars");
         if (key != visitedKey)
         {
             visitedKey = key;
@@ -605,8 +607,23 @@ public sealed class Plugin : IDalamudPlugin
         }
         var visitedBefore = visited.Count;
         var here = ClientState.TerritoryType;
-        if (locations.Count > 1)
+        var objectives = locations.Select(l => l.Objective).Distinct().Count();
+        if (objectives > 1)
         {
+            // Separate objectives: the game says which are done (the tracker's checkmarks).
+            visited.Clear();
+            for (var i = 0; i < locations.Count; i++)
+            {
+                if (QuestTargets.ObjectiveDone(q.QuestId, locations[i].Objective))
+                    visited.Add(i);
+            }
+            if (visited.Count >= locations.Count)
+                visited.Clear();
+            visitedBefore = visited.Count;
+        }
+        else if (locations.Count > 1)
+        {
+            // Alternative spots of one objective: the game keeps no per-spot record, so standing at one counts.
             for (var i = 0; i < locations.Count; i++)
             {
                 var spot = locations[i];
@@ -862,6 +879,14 @@ public sealed class Plugin : IDalamudPlugin
     private int exitEvalPending;
     private DateTime exitEvalStarted;
 
+    private const float LandingBonus = 400f;
+
+    // The lift line names the airship landing ("Ride Lift to the Airship Landing"); words per client language.
+    private static readonly string[] LandingWords = ["airship", "飛空", "luftschiff", "aéronef", "aerodrome"];
+
+    private static bool ToLanding(string option) =>
+        LandingWords.Any(w => option.Contains(w, StringComparison.OrdinalIgnoreCase));
+
     private ZoneExit ChooseExit(Vector3 from, List<ZoneExit> hops, uint goalTerritory, out float cost)
     {
         var here = new Vector2(from.X, from.Z);
@@ -874,10 +899,16 @@ public sealed class Plugin : IDalamudPlugin
                 MeasureExits(from, hops, goalTerritory);
         }
 
+        // The next leg is an airship: the landings in Ul'dah and Limsa sit above the city and are reached by lift,
+        // so a lift that names the landing beats a closer plain exit into the same zone.
+        var next = hops[0].To;
+        var airshipNext = next != goalTerritory && links.FirstHops(next, goalTerritory).Exists(e => e.Via != null);
+
         // Measured walking length when we have it, straight line (inflated) until then.
         float Cost(ZoneExit e) => (config.ExitByPathLength && exitLengths.TryGetValue(e, out var length)
             ? length
-            : Vector2.Distance(e.Xz, here) * 1.3f) + (e.Via is { Gil: > 0 } ? FarePenalty : 0f);
+            : Vector2.Distance(e.Xz, here) * 1.3f) + (e.Via is { Gil: > 0 } ? FarePenalty : 0f)
+            - (airshipNext && e.Via is { } via && ToLanding(via.Option) ? LandingBonus : 0f);
 
         var exit = hops[0];
         foreach (var hop in hops)
@@ -889,7 +920,8 @@ public sealed class Plugin : IDalamudPlugin
         if (currentExit is { } kept && hops.Contains(kept) && Cost(kept) < Cost(exit) + 20f)
             exit = kept;
         currentExit = exit;
-        cost = Cost(exit);
+        // The walk itself, without the fare and landing adjustments used only to rank the exits.
+        cost = config.ExitByPathLength && exitLengths.TryGetValue(exit, out var walked) ? walked : Vector2.Distance(exit.Xz, here) * 1.3f;
         return exit;
     }
 
