@@ -1,0 +1,7 @@
+bin/
+obj/
+dist/
+*.user
+.vs/
+# Local dev journal: local paths and machine setup
+MODLOG.md
