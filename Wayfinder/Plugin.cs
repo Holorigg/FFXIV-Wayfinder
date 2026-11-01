@@ -642,13 +642,24 @@ public sealed class Plugin : IDalamudPlugin
         var visitedBefore = visited.Count;
         var here = ClientState.TerritoryType;
         var objectives = locations.Select(l => l.Objective).Distinct().Count();
+        // Whether objective k of this step is done: the tracker's checkmark when the quest is shown there (works for
+        // every kind of objective), else the bit "talk to" steps keep in the quest variables.
+        var todoTexts = questTargets.TodoTexts(q.QuestId);
+        var stepTodos = questTargets.StepTodos(q);
+        var trackerLines = Tracker.Lines();
+        bool ObjectiveClosed(int k)
+        {
+            if (k < stepTodos.Count && todoTexts.TryGetValue(stepTodos[k], out var line) && Tracker.Done(trackerLines, line) is { } ticked)
+                return ticked;
+            return QuestTargets.ObjectiveDone(q.QuestId, k);
+        }
         if (objectives > 1)
         {
             // Separate objectives: the game says which are done (the tracker's checkmarks).
             visited.Clear();
             for (var i = 0; i < locations.Count; i++)
             {
-                if (QuestTargets.ObjectiveDone(q.QuestId, locations[i].Objective))
+                if (ObjectiveClosed(locations[i].Objective))
                     visited.Add(i);
             }
             if (visited.Count >= locations.Count)
@@ -699,24 +710,53 @@ public sealed class Plugin : IDalamudPlugin
         var next = locations[best];
         var label = q.Accepted ? q.Name : Loc.T("pick-up", q.Name);
 
-        // A search area: once nearby, lead to the quest's own NPCs around it that still carry a quest marker.
+        // A search area ("speak to three people", "slay a gall gnat", "obtain brownie brushes"): once nearby, lead
+        // to what the open objectives name or mark, as the game shows it right now.
         if (next.Area && next.Territory == here
             && Vector2.Distance(new Vector2(next.Position.X, next.Position.Z), new Vector2(from.X, from.Z)) < AreaSearchDistance)
         {
-            var marked = MarkedActors(questTargets.Actors(q), next.Position);
-            if (marked.Count > 0)
+            var open = new List<string>();
+            for (var k = 0; k < stepTodos.Count; k++)
             {
-                marked.Sort((a, b) => Vector3.Distance(a.Position, from).CompareTo(Vector3.Distance(b.Position, from)));
-                otherSpots = marked.Skip(1).Select(m => m.Position).ToList();
-                chosenSpot = -1;
-                Trace($"quest area: {marked.Count} marked NPCs, nearest {marked[0].Name}", "area");
-                return new Goal(here, new Vector2(marked[0].Position.X, marked[0].Position.Z), marked[0].Position,
-                    Loc.T("area-target", q.Name, marked[0].Name, marked.Count), false);
+                if (objectives > 1 && ObjectiveClosed(k))
+                    continue;
+                if (todoTexts.TryGetValue(stepTodos[k], out var text))
+                    open.Add(text);
             }
-            Trace("quest area: no marked NPCs in view", "area");
+            var targets = LiveTargets(questTargets.Actors(q), questTargets.Enemies(q), open, next.Position);
+            if (targets.Count > 0)
+            {
+                // Best kind first (named in an objective or carrying a quest marker), then nearest.
+                var rank = targets.Min(t => t.Rank);
+                var found = targets.Where(t => t.Rank == rank).OrderBy(t => Vector3.Distance(t.Position, from)).ToList();
+                otherSpots = found.Skip(1).Take(6).Select(t => t.Position).ToList();
+                chosenSpot = -1;
+                Trace($"quest area: {found.Count} targets (rank {rank}), nearest {found[0].Name}", "area");
+                return new Goal(here, new Vector2(found[0].Position.X, found[0].Position.Z), found[0].Position,
+                    Loc.T("area-hunt", q.Name, found[0].Name), false);
+            }
+            // Objects an open objective names ("Obtain brownie brushes") have fixed spots: lead to the nearest one not
+            // taken yet. A spot counts as taken once the player is close enough for it to be loaded and nothing
+            // there can be targeted any more.
+            var spots = questTargets.ObjectSpots(q)
+                .Where(s => s.Territory == here && open.Exists(text => QuestTargets.Mentions(text, s.Name)) && !Taken(s.Object, s.Position, from))
+                .OrderBy(s => Vector3.Distance(s.Position, from))
+                .ToList();
+            if (spots.Count > 0)
+            {
+                otherSpots = spots.Skip(1).Take(6).Select(s => s.Position).ToList();
+                chosenSpot = -1;
+                Trace($"quest area: {spots.Count} {spots[0].Name} spots left, nearest at {spots[0].Position.X:0},{spots[0].Position.Z:0}", "area");
+                return new Goal(here, new Vector2(spots[0].Position.X, spots[0].Position.Z), spots[0].Position,
+                    Loc.T("area-hunt", q.Name, spots[0].Name), false);
+            }
+            Trace($"quest area: nothing matching {string.Join(" | ", open)} in view", "area");
         }
 
-        if (locations.Count > 1)
+        // Several objectives: count the ones still open, not the spots.
+        if (objectives > 1)
+            label += Loc.T("spots", locations.Where((l, i) => !visited.Contains(i)).Select(l => l.Objective).Distinct().Count());
+        else if (locations.Count > 1)
             label += Loc.T("spots", locations.Count - visited.Count);
         return new Goal(next.Territory, new Vector2(next.Position.X, next.Position.Z), next.Position, label, false);
     }
@@ -725,21 +765,56 @@ public sealed class Plugin : IDalamudPlugin
     // from its centre are not looked at.
     private const float AreaSearchDistance = 200f;
 
-    private static unsafe List<(Vector3 Position, string Name)> MarkedActors(HashSet<uint> actors, Vector3 centre)
+    // Objects load within roughly this distance; closer than that, a missing or untargetable object is gone.
+    private const float ObjectLoadDistance = 45f;
+
+    private static bool Taken(uint objectId, Vector3 spot, Vector3 player)
     {
-        var result = new List<(Vector3, string)>();
-        if (actors.Count == 0)
-            return result;
+        if (Vector3.Distance(spot, player) > ObjectLoadDistance)
+            return false;
         foreach (var obj in ObjectTable)
         {
-            if (!actors.Contains(obj.BaseId) || obj.Address == nint.Zero)
-                continue;
-            var native = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)obj.Address;
-            if (native->NamePlateIconId == 0)
-                continue;
+            if (obj.BaseId == objectId && Vector3.Distance(obj.Position, spot) < 4f)
+                return !obj.IsTargetable;
+        }
+        return true;
+    }
+
+    // What the game shows around a quest area right now, ranked:
+    // 0 - named in an open objective (a living monster "Slay a gall gnat", an object "Obtain brownie brushes"),
+    //     or one of the quest's NPCs/objects still carrying a quest marker;
+    // 1 - one of the quest's own monsters (ENEMYn base ids) when nothing is named;
+    private static unsafe List<(Vector3 Position, string Name, int Rank)> LiveTargets(HashSet<uint> actors, HashSet<uint> enemies, List<string> objectives, Vector3 centre)
+    {
+        var result = new List<(Vector3, string, int)>();
+        bool Named(string name) => objectives.Exists(text => QuestTargets.Mentions(text, name));
+        foreach (var obj in ObjectTable)
+        {
             if (Vector2.Distance(new Vector2(obj.Position.X, obj.Position.Z), new Vector2(centre.X, centre.Z)) > AreaSearchDistance)
                 continue;
-            result.Add((obj.Position, obj.Name.TextValue));
+            var name = obj.Name.TextValue;
+            if (obj is Dalamud.Game.ClientState.Objects.Types.IBattleNpc npc)
+            {
+                if (npc.IsDead || npc.CurrentHp == 0 || obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
+                    continue;
+                if (Named(name))
+                    result.Add((obj.Position, name, 0));
+                // Only when the objectives cannot be read: the base id also matches look-alikes (giant gnat for
+                // gall gnat) and monsters of objectives already done.
+                else if (objectives.Count == 0 && enemies.Contains(obj.BaseId))
+                    result.Add((obj.Position, name, 1));
+                continue;
+            }
+            if (obj.ObjectKind is not (Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc or Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj)
+                || obj.Address == nint.Zero || !obj.IsTargetable)
+                continue;
+            var native = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)obj.Address;
+            var marked = native->NamePlateIconId != 0;
+            // The quest's own NPCs and objects count only while they carry a quest marker.
+            if (actors.Contains(obj.BaseId) && marked)
+                result.Add((obj.Position, name, 0));
+            else if (Named(name))
+                result.Add((obj.Position, name, 0));
         }
         return result;
     }

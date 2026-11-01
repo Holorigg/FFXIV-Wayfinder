@@ -24,6 +24,7 @@ internal static class Loc
         ["eta.minutes"] = ("{0} min", "{0} мин"),
         ["eta.minutes-seconds"] = ("{0} min {1} sec", "{0} мин {1} сек"),
         ["spots"] = (" ({0} spots left)", " (осталось целей: {0})"),
+        ["area-hunt"] = ("{0}: {1}", "{0}: {1}"),
         ["area-target"] = ("{0}: {1} ({2} left here)", "{0}: {1} (здесь осталось {2})"),
         ["current"] = ("Aether current ({0}/{1} found)", "Поток эфира (собрано {0}/{1})"),
         ["place.MarketBoard"] = ("Market Board", "Маркетборд"),
