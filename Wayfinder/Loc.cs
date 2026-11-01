@@ -40,6 +40,8 @@ internal static class Loc
         ["attune.aetheryte"] = ("Attune: aetheryte \"{0}\"", "Открыть эфирит «{0}»"),
         ["attune.shard"] = ("Attune: aethernet shard \"{0}\"", "Открыть кристалл аэтернета «{0}»"),
         ["reward.upgrade"] = ("Best for you: {0} (item level {1} -> {2})", "Лучше для тебя: {0} (ур. предмета {1} → {2})"),
+        ["reward.upgrade-stat"] = ("Best for you: {0} (item level {1} -> {2}, {3} +{4})", "Лучше для тебя: {0} (ур. {1} → {2}, {3} +{4})"),
+        ["reward.no-stat"] = ("None has {0}; by item level: {1} ({2} -> {3})", "{0} нет ни в одной; по уровню: {1} (ур. {2} → {3})"),
         ["reward.no-upgrade"] = ("No upgrade for {0} among these", "Улучшений для класса «{0}» тут нет"),
         ["reward.sell"] = ("Sells for the most: {0} ({1} gil)", "Дороже продать: {0} ({1} гил)"),
         ["step.transport.walk"] = ("Walk to {0}, pick \"{1}\"{2}", "Иди к «{0}», выбери «{1}»{2}"),

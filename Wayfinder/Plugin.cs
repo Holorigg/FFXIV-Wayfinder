@@ -379,7 +379,11 @@ public sealed class Plugin : IDalamudPlugin
     {
         // Independent of the path: shown while a quest reward window is open.
         if (config.RewardHint)
+        {
             rewardHint.Draw(ObjectTable.LocalPlayer, questTargets);
+            if (rewardHint.Diagnostics is { } diagnostics)
+                Trace(diagnostics, "reward");
+        }
         if (!config.Enabled)
             return;
         // Floor graphics would sit on top of the game's own AoE markers mid-fight.
