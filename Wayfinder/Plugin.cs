@@ -839,9 +839,10 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // What the game shows around a quest area right now, ranked:
-    // 0 - named in an open objective (a living monster "Slay a gall gnat", an object "Obtain brownie brushes"),
-    //     or one of the quest's NPCs/objects still carrying a quest marker;
-    // 1 - one of the quest's own monsters (ENEMYn base ids) when nothing is named;
+    // 0 - the quest's own objects that can be used, its NPCs with an objective marker;
+    // 1 - monsters the objective names that are of the quest's own kind (ENEMYn base ids);
+    // 2 - anything else the objective names (look-alike monsters, other objects);
+    // 3 - the quest's monsters by base id, only when the objective texts are unknown.
     private static unsafe List<(Vector3 Position, string Name, int Rank)> LiveTargets(HashSet<uint> actors, HashSet<uint> enemies, List<string> objectives, Vector3 centre)
     {
         var result = new List<(Vector3, string, int)>();
@@ -855,12 +856,15 @@ public sealed class Plugin : IDalamudPlugin
             {
                 if (npc.IsDead || npc.CurrentHp == 0 || obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
                     continue;
+                // A monster the objective names: the quest's own kind first, any look-alike after the quest's objects
+                // (Save the Trees: the hares to slay only appear once ale is poured on a scarred tree; the ones
+                // already roaming there are not them).
                 if (Named(name))
-                    result.Add((obj.Position, name, 0));
+                    result.Add((obj.Position, name, enemies.Contains(obj.BaseId) ? 1 : 2));
                 // Only when the objectives cannot be read: the base id also matches look-alikes (giant gnat for
                 // gall gnat) and monsters of objectives already done.
                 else if (objectives.Count == 0 && enemies.Contains(obj.BaseId))
-                    result.Add((obj.Position, name, 1));
+                    result.Add((obj.Position, name, 3));
                 continue;
             }
             if (obj.ObjectKind is not (Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc or Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj)
@@ -875,7 +879,7 @@ public sealed class Plugin : IDalamudPlugin
             if (actors.Contains(obj.BaseId) && (marked || isObject))
                 result.Add((obj.Position, name, 0));
             else if (Named(name))
-                result.Add((obj.Position, name, 0));
+                result.Add((obj.Position, name, 2));
         }
         return result;
     }
