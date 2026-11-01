@@ -984,6 +984,20 @@ public sealed class Plugin : IDalamudPlugin
         return names;
     }
 
+    // The loaded object of that id nearest to a spot (within 20 y).
+    private static Vector3? LiveObject(uint id, Vector3 near)
+    {
+        Vector3? best = null;
+        foreach (var obj in ObjectTable)
+        {
+            if (obj.BaseId != id || Vector3.Distance(obj.Position, near) > 20f)
+                continue;
+            if (best is not { } b || Vector3.Distance(obj.Position, near) < Vector3.Distance(b, near))
+                best = obj.Position;
+        }
+        return best;
+    }
+
     // The loaded NPC of that name nearest to the stored spot.
     private Vector3? LiveNpc(string name, Vector3 near)
     {
@@ -1305,6 +1319,13 @@ public sealed class Plugin : IDalamudPlugin
             // A transport NPC's own height picks the right floor (New Gridania's airship ticketer stands above the
             // Carline Canopy); map arrows have none.
             exact = exit.Height is { } height ? new Vector3(exit.Xz.X, height, exit.Xz.Y) : null;
+            // A door object stands a few yalms off its Level spot (the Waking Sands entrance: the spot is behind the
+            // counter next to it); once loaded, go to the door itself.
+            if (exit.Object != 0 && LiveObject(exit.Object, new Vector3(exit.Xz.X, exit.Height ?? from.Y, exit.Xz.Y)) is { } door)
+            {
+                goal = new Vector2(door.X, door.Z);
+                exact = door;
+            }
             if (exit.Via is { } via)
             {
                 // Ferry, airship, lift: walk to the NPC, then pick the line in their menu. The Level sheet spot can be

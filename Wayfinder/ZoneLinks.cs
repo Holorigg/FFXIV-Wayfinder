@@ -11,7 +11,8 @@ namespace Wayfinder;
 internal sealed record Transport(string Npc, string Option, uint Gil, uint[] Quests, bool AnyQuest);
 
 // Height = where a transport NPC stands (several floors share X/Z in cities); null for map arrows.
-internal sealed record ZoneExit(uint From, uint To, Vector2 Xz, string Name, Transport? Via = null, float? Height = null);
+// Object = the door object of an entrance ("Waking Sands Entrance"), to find it where it actually is once loaded.
+internal sealed record ZoneExit(uint From, uint To, Vector2 Xz, string Name, Transport? Via = null, float? Height = null, uint Object = 0);
 
 // Zone transitions come from the red map-link arrows: MapMarker rows with DataType 1 and an icon point at another Map.
 internal sealed class ZoneLinks
@@ -115,7 +116,7 @@ internal sealed class ZoneLinks
                 if (m.Outside != level.Territory.RowId || !objectName.Contains(m.Name, StringComparison.OrdinalIgnoreCase))
                     continue;
                 var placeName = territories.TryGetRow(m.Inside, out var zone) ? zone.PlaceName.ValueNullable?.Name.ExtractText() ?? m.Name : m.Name;
-                Add(new ZoneExit(m.Outside, m.Inside, new Vector2(level.X, level.Z), placeName));
+                Add(new ZoneExit(m.Outside, m.Inside, new Vector2(level.X, level.Z), placeName, null, null, level.Object.RowId));
                 added++;
             }
         }
