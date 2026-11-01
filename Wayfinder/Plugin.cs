@@ -868,8 +868,11 @@ public sealed class Plugin : IDalamudPlugin
                 continue;
             var native = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)obj.Address;
             var marked = ObjectiveIcons.Contains(native->NamePlateIconId);
-            // The quest's own NPCs and objects count only while they carry a quest marker.
-            if (actors.Contains(obj.BaseId) && marked)
+            // The quest's own NPCs count while they carry an objective marker; its own objects (EOBJECTn: the
+            // hunting knife in Big Trouble in Little Ala Mhigo, not named by the objective) while they can be picked
+            // up - taken ones vanish or stop being targetable.
+            var isObject = obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj;
+            if (actors.Contains(obj.BaseId) && (marked || isObject))
                 result.Add((obj.Position, name, 0));
             else if (Named(name))
                 result.Add((obj.Position, name, 0));
