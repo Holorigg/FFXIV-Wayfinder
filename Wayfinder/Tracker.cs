@@ -43,7 +43,7 @@ internal static unsafe class Tracker
             }
             if (text == null || icon == null || !icon->AtkResNode.IsVisible())
                 continue;
-            var line = StripCount(text->NodeText.ToString());
+            var line = Key(text->NodeText.ToString());
             if (line.Length > 0)
                 result[line] = icon->PartId == CheckmarkPart;
         }
@@ -53,8 +53,21 @@ internal static unsafe class Tracker
     // Whether the tracker lists this objective and, if so, whether it is ticked.
     public static bool? Done(Dictionary<string, bool> lines, string objective)
     {
-        var key = StripCount(objective);
-        return lines.TryGetValue(key, out var done) ? done : null;
+        return lines.TryGetValue(Key(objective), out var done) ? done : null;
+    }
+
+    // Long lines come wrapped in the tracker ("...planar fissure at the" / "Zanr'ak encampment."), with line-break
+    // codes in the node text, so lines are compared by their letters and digits only.
+    private static string Key(string line)
+    {
+        line = StripCount(line);
+        var key = new System.Text.StringBuilder(line.Length);
+        foreach (var c in line)
+        {
+            if (char.IsLetterOrDigit(c))
+                key.Append(char.ToLowerInvariant(c));
+        }
+        return key.ToString();
     }
 
     private static string StripCount(string line)
