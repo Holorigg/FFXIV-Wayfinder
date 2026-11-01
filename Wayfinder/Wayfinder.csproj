@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>0.8.3.0</Version>
+    <Version>0.8.4.0</Version>
     <Author>holorigg</Author>
     <Name>Wayfinder</Name>
     <Punchline>GPS-style path on the ground to your map flag, quest objective or the nearest service.</Punchline>

@@ -1001,6 +1001,59 @@ public sealed class Plugin : IDalamudPlugin
 
     internal int PlayerLevel => ObjectTable.LocalPlayer?.Level ?? 1;
 
+    // ---------- lifts ----------
+
+    // Set when the last path ends in a jump no one can walk: a long segment with a big height change, which is how
+    // vnavmesh finishes a route to a target it cannot reach.
+    private volatile bool pathUnreachable;
+    private ZoneLinks.Lift? detour;
+    private uint detourZone;
+    private float detourHeight;
+
+    private static bool Unreachable(List<Vector3> route)
+    {
+        for (var i = 1; i < route.Count; i++)
+        {
+            var a = route[i - 1];
+            var b = route[i];
+            var flat = new Vector2(b.X - a.X, b.Z - a.Z).Length();
+            if (flat > 25f && MathF.Abs(b.Y - a.Y) > 10f)
+                return true;
+        }
+        return false;
+    }
+
+    // A lift at the player's level, kept until they have ridden it (their height changed) or left the zone, so
+    // the route does not flip back once the path to the lift itself looks fine.
+    private ZoneLinks.Lift? LiftDetour(Vector3 from)
+    {
+        var here = ClientState.TerritoryType;
+        if (detour is { } kept)
+        {
+            if (detourZone == here && MathF.Abs(from.Y - detourHeight) < 8f)
+                return kept;
+            detour = null;
+            pathUnreachable = false;
+        }
+        if (!pathUnreachable)
+            return null;
+        ZoneLinks.Lift? best = null;
+        foreach (var lift in links.Lifts)
+        {
+            if (lift.Zone != here || MathF.Abs(lift.Npc.Y - from.Y) > 8f || Vector3.Distance(lift.Npc, from) > 60f)
+                continue;
+            if (best is not { } b || Vector3.Distance(lift.Npc, from) < Vector3.Distance(b.Npc, from))
+                best = lift;
+        }
+        if (best != null)
+        {
+            detour = best;
+            detourZone = here;
+            detourHeight = from.Y;
+        }
+        return best;
+    }
+
     // ---------- quests nearby ----------
 
     internal sealed record NearbyQuest(CatalogQuest Quest, int Hops, float Distance, int Experience, uint Gil, (string Name, int From, int To)? Upgrade);
@@ -1198,7 +1251,7 @@ public sealed class Plugin : IDalamudPlugin
         var before = links.LiveAdded;
         links.UpdateLive(ClientState.TerritoryType, ObjectTable
             .Where(o => o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc)
-            .Select(o => (o.BaseId, new Vector2(o.Position.X, o.Position.Z))));
+            .Select(o => (o.BaseId, o.Position)));
         if (links.LiveAdded != before)
         {
             Trace($"{links.LiveAdded - before} transport NPCs found nearby", "live");
@@ -1249,11 +1302,20 @@ public sealed class Plugin : IDalamudPlugin
 
             var exit = ChooseExit(from, hops, destination.Territory, out var exitCost);
             goal = exit.Xz;
-            exact = null;
+            // A transport NPC's own height picks the right floor (New Gridania's airship ticketer stands above the
+            // Carline Canopy); map arrows have none.
+            exact = exit.Height is { } height ? new Vector3(exit.Xz.X, height, exit.Xz.Y) : null;
             if (exit.Via is { } via)
             {
-                // Ferry, airship, lift: walk to the NPC, then pick the line in their menu.
-                var atNpc = Vector2.Distance(new Vector2(from.X, from.Z), exit.Xz) < AtNpcDistance;
+                // Ferry, airship, lift: walk to the NPC, then pick the line in their menu. The Level sheet spot can be
+                // one of several the NPC is placed at (New Gridania's airship ticketer); once they are loaded, go to
+                // where they actually stand.
+                if (via.Npc.Length > 0 && LiveNpc(via.Npc, new Vector3(exit.Xz.X, from.Y, exit.Xz.Y)) is { } stands)
+                {
+                    goal = new Vector2(stands.X, stands.Z);
+                    exact = stands;
+                }
+                var atNpc = Vector2.Distance(new Vector2(from.X, from.Z), goal) < AtNpcDistance;
                 var fare = via.Gil > 0 ? Loc.T("step.fare", via.Gil) : "";
                 Step = Loc.T(atNpc ? "step.transport.here" : "step.transport.walk", via.Npc, via.Option, fare);
                 marker = via.Npc;
@@ -1276,6 +1338,18 @@ public sealed class Plugin : IDalamudPlugin
                 Teleport = null;
         }
 
+        // The navmesh cannot get down from here (Ul'dah's airship landing: the "path" ends in a straight drop through
+        // the wall). A lift in this zone at the player's level goes down; lead there until the player has changed
+        // level, then walking takes over.
+        if (LiftDetour(from) is { } lift)
+        {
+            goal = new Vector2(lift.Npc.X, lift.Npc.Z);
+            exact = lift.Npc;
+            var atLift = Vector3.Distance(from, lift.Npc) < AtNpcDistance;
+            Step = Loc.T(atLift ? "step.transport.here" : "step.transport.walk", lift.Name, lift.Option, "");
+            marker = lift.Name;
+            Trace($"no way down on foot: lift {lift.Name} ({lift.Option})", "lift");
+        }
         Vector3? floor = null;
         try
         {
@@ -1342,7 +1416,8 @@ public sealed class Plugin : IDalamudPlugin
                 if (t.IsCompletedSuccessfully && t.Result is { Count: > 0 } result)
                 {
                     path = result;
-                    Trace("path found", "path");
+                    pathUnreachable = Unreachable(result);
+                    Trace($"path found: {result.Count} points, {string.Join(" ", result.Where((p, i) => i % Math.Max(1, result.Count / 25) == 0).Select(p => $"({p.X:0},{p.Y:0},{p.Z:0})"))}", "path");
                 }
                 else
                 {

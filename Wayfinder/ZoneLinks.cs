@@ -10,7 +10,8 @@ namespace Wayfinder;
 // Option is the line to pick in their menu ("Purchase Passage to Aleport").
 internal sealed record Transport(string Npc, string Option, uint Gil, uint[] Quests, bool AnyQuest);
 
-internal sealed record ZoneExit(uint From, uint To, Vector2 Xz, string Name, Transport? Via = null);
+// Height = where a transport NPC stands (several floors share X/Z in cities); null for map arrows.
+internal sealed record ZoneExit(uint From, uint To, Vector2 Xz, string Name, Transport? Via = null, float? Height = null);
 
 // Zone transitions come from the red map-link arrows: MapMarker rows with DataType 1 and an icon point at another Map.
 internal sealed class ZoneLinks
@@ -180,10 +181,15 @@ internal sealed class ZoneLinks
                 continue;
             foreach (var (to, via) in list)
             {
-                // Same-zone warps are lifts to a landing in the same zone.
-                if (to == from || !seen.Add((level.Object.RowId, to)))
+                // Same-zone warps are lifts between levels of one zone: kept apart for unreachable floors.
+                if (to == from)
+                {
+                    AddLift(from, new Vector3(level.X, level.Y, level.Z), via);
                     continue;
-                Add(new ZoneExit(from, to, new Vector2(level.X, level.Z), ZoneName(territories, to), via));
+                }
+                if (!seen.Add((level.Object.RowId, to)))
+                    continue;
+                Add(new ZoneExit(from, to, new Vector2(level.X, level.Z), ZoneName(territories, to), via, level.Y));
                 added++;
             }
         }
@@ -200,25 +206,44 @@ internal sealed class ZoneLinks
 
     // Transport NPCs currently loaded around the player (ENpc id, position). Ones without a Level row become
     // exits of this zone until the player leaves it.
-    public void UpdateLive(uint zone, IEnumerable<(uint Npc, Vector2 Xz)> loaded)
+    public void UpdateLive(uint zone, IEnumerable<(uint Npc, Vector3 Position)> loaded)
     {
         if (!exits.TryGetValue(zone, out var list))
             exits[zone] = list = [];
-        foreach (var (npc, xz) in loaded)
+        foreach (var (npc, position) in loaded)
         {
+            var xz = new Vector2(position.X, position.Z);
             if (!warpNpcs.TryGetValue(npc, out var warps))
                 continue;
             foreach (var (to, via) in warps)
             {
-                if (to == zone || list.Exists(e => e.To == to && e.Via?.Npc == via.Npc && Vector2.Distance(e.Xz, xz) < 8f))
+                if (to == zone)
+                {
+                    AddLift(zone, position, via);
                     continue;
-                list.Add(new ZoneExit(zone, to, xz, zoneNames.TryGetValue(to, out var name) ? name : $"#{to}", via));
+                }
+                if (list.Exists(e => e.To == to && e.Via?.Npc == via.Npc && Vector2.Distance(e.Xz, xz) < 8f))
+                    continue;
+                list.Add(new ZoneExit(zone, to, xz, zoneNames.TryGetValue(to, out var name) ? name : $"#{to}", via, position.Y));
                 LiveAdded++;
             }
         }
     }
 
     public int LiveAdded { get; private set; }
+
+    // Lift attendants that move between levels of the same zone (Ul'dah's airship landing and the Ruby Road
+    // Exchange, Limsa's landing and the Upper Decks), with the menu line to pick.
+    internal readonly record struct Lift(uint Zone, Vector3 Npc, string Name, string Option);
+
+    public List<Lift> Lifts { get; } = [];
+
+    private void AddLift(uint zone, Vector3 at, Transport via)
+    {
+        if (!Lifts.Exists(l => l.Zone == zone && l.Option == via.Option && Vector3.Distance(l.Npc, at) < 8f))
+            Lifts.Add(new Lift(zone, at, via.Npc, via.Option));
+    }
+
 
     // Zone transitions from `from` to every territory reachable within `limit` hops (itself = 0).
     public Dictionary<uint, int> DistancesFrom(uint from, int limit)
