@@ -3,7 +3,7 @@
     "Author": "holorigg",
     "Name": "Wayfinder",
     "InternalName": "Wayfinder",
-    "AssemblyVersion": "0.7.1.0",
+    "AssemblyVersion": "0.8.0.0",
     "Punchline": "GPS-style path on the ground to your map flag, quest objective or the nearest service.",
     "Description": "Draws the route on the ground to the map flag, the current quest step, the nearest service (market board, mender, summoning bell, inn, mail, hunt board, chocobo porter, class guild) or the zone's aether currents. Routes across zone exits, ferries, airships and lifts, with city aethernet and teleport suggestions, travel time, a mount hint, flight paths and an optional minimap/map overlay. Only draws; never moves the character. Requires vnavmesh (https://puni.sh/api/repository/veyn). Open with /way.",
     "ApplicableVersion": "any",
@@ -21,9 +21,9 @@
     "CanUnloadAsync": false,
     "LoadPriority": 0,
     "AcceptsFeedback": false,
-    "DownloadLinkInstall": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.7.1/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.7.1/latest.zip",
-    "DownloadLinkTesting": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.7.1/latest.zip",
-    "LastUpdate": 1793482731
+    "DownloadLinkInstall": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.8.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.8.0/latest.zip",
+    "DownloadLinkTesting": "https://github.com/Holorigg/FFXIV-Wayfinder/releases/download/v0.8.0/latest.zip",
+    "LastUpdate": 1793517763
   }
 ]
