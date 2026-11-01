@@ -13,7 +13,7 @@ internal readonly record struct QuestEntry(ushort QuestId, string Name, bool Acc
 
 // Area = the Level row is a search area (Type 51, "speak to three people around here"), not a placed NPC or object.
 // Objective = index of the step's todo entry this spot belongs to (several todos = several objectives in the tracker).
-internal readonly record struct QuestLocation(uint Territory, Vector3 Position, bool Area = false, int Objective = 0);
+internal readonly record struct QuestLocation(uint Territory, Vector3 Position, bool Area = false, int Objective = 0, uint Object = 0);
 
 // Quest objectives come from the Quest sheet: each TodoParams entry lists the Level rows (world positions)
 // that belong to the step whose sequence equals ToDoCompleteSeq. A quest not yet accepted points at its issuer.
@@ -115,7 +115,8 @@ internal sealed class QuestTargets
         // Several objectives of one step can share a spot ("speak to X" three times); that is one place to go.
         if (result.Exists(l => l.Territory == value.Territory.RowId && Vector3.Distance(l.Position, position) < 2f))
             return;
-        result.Add(new QuestLocation(value.Territory.RowId, position, value.Type == AreaLevelType, objective));
+        result.Add(new QuestLocation(value.Territory.RowId, position, value.Type == AreaLevelType, objective,
+            value.Type is 8 or 45 ? value.Object.RowId : 0));
     }
 
     private const byte AreaLevelType = 51;

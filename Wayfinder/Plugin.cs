@@ -116,6 +116,8 @@ public sealed class Plugin : IDalamudPlugin
         catalog = new QuestCatalog(DataManager);
         Log.Information("[Wayfinder] {Quests} side quests in the catalog", catalog.Count);
         PathRenderer.Settings = config;
+        LoadObjectiveIcons(DataManager);
+        MarkerTrace = m => Trace(m, $"marker-{m.Split(':')[0]}");
         Log.Information("[Wayfinder] {Attune} attunement points, {Npcs} NPC spots indexed", attunement.Count, npcs.Count);
         Log.Information("[Wayfinder] landmarks: {List}", string.Join(", ", Enum.GetValues<LandmarkKind>().Select(k => $"{k} {landmarks.Count(k)}")));
         Log.Information("[Wayfinder] {Count} aethernet shards, {Currents} aether currents, {Aetherytes} aetheryte positions loaded", aethernet.Count, currents.Count, teleports.PositionCount);
@@ -668,11 +670,26 @@ public sealed class Plugin : IDalamudPlugin
         }
         else if (locations.Count > 1)
         {
-            // Alternative spots of one objective: the game keeps no per-spot record, so standing at one counts.
+            // Several spots of one objective ("investigate 1/4"). A spot with its own NPC or object is done once that
+            // thing is loaded and no longer shows a quest marker (still marked = still to do, even when standing
+            // next to it). Spots without one (plain areas) count as done once stood at.
             for (var i = 0; i < locations.Count; i++)
             {
                 var spot = locations[i];
-                if (spot.Territory == here && Vector2.Distance(new Vector2(spot.Position.X, spot.Position.Z), new Vector2(from.X, from.Z)) < VisitedDistance
+                if (spot.Territory != here)
+                    continue;
+                if (spot.Object != 0)
+                {
+                    if (StillMarked(spot.Object, spot.Position, from) is { } marked)
+                    {
+                        if (marked)
+                            visited.Remove(i);
+                        else
+                            visited.Add(i);
+                    }
+                    continue;
+                }
+                if (Vector2.Distance(new Vector2(spot.Position.X, spot.Position.Z), new Vector2(from.X, from.Z)) < VisitedDistance
                     && MathF.Abs(spot.Position.Y - from.Y) < 5f)
                     visited.Add(i);
             }
@@ -768,6 +785,43 @@ public sealed class Plugin : IDalamudPlugin
     // Objects load within roughly this distance; closer than that, a missing or untargetable object is gone.
     private const float ObjectLoadDistance = 45f;
 
+    private static Action<string>? MarkerTrace;
+
+    // Nameplate icons that mean "objective of a quest you have": every quest type (EventIconType) owns six icons
+    // from its NpcIconAvailable base; +1 and +2 offer a new quest ("!"), +3 to +6 mark an objective or the
+    // turn-in (Nathaxio during Presence of the Enemy: 71203 = main scenario base 71200 + 3). A side quest offer
+    // over the same NPC is therefore not taken for the quest being followed.
+    private static readonly HashSet<uint> ObjectiveIcons = [];
+
+    private static void LoadObjectiveIcons(IDataManager data)
+    {
+        foreach (var row in data.GetExcelSheet<Lumina.Excel.Sheets.EventIconType>())
+        {
+            if (row.IconRange < 6 || row.NpcIconAvailable == 0)
+                continue;
+            for (var offset = 3u; offset <= 6; offset++)
+                ObjectiveIcons.Add(row.NpcIconAvailable + offset);
+        }
+    }
+
+    // Whether the NPC or object at a quest spot still shows a quest marker; null while it is too far to be loaded.
+    private static unsafe bool? StillMarked(uint objectId, Vector3 spot, Vector3 player)
+    {
+        if (Vector3.Distance(spot, player) > ObjectLoadDistance)
+            return null;
+        foreach (var obj in ObjectTable)
+        {
+            if (obj.BaseId != objectId || Vector3.Distance(obj.Position, spot) > 6f || obj.Address == nint.Zero)
+                continue;
+            var native = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)obj.Address;
+            MarkerTrace?.Invoke($"marker {obj.Name.TextValue}: icon {native->NamePlateIconId}");
+            return ObjectiveIcons.Contains(native->NamePlateIconId)
+                   || obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj && obj.IsTargetable;
+        }
+        // Loaded area but the NPC is not there: the story moved them on, nothing to do at this spot.
+        return false;
+    }
+
     private static bool Taken(uint objectId, Vector3 spot, Vector3 player)
     {
         if (Vector3.Distance(spot, player) > ObjectLoadDistance)
@@ -809,7 +863,7 @@ public sealed class Plugin : IDalamudPlugin
                 || obj.Address == nint.Zero || !obj.IsTargetable)
                 continue;
             var native = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)obj.Address;
-            var marked = native->NamePlateIconId != 0;
+            var marked = ObjectiveIcons.Contains(native->NamePlateIconId);
             // The quest's own NPCs and objects count only while they carry a quest marker.
             if (actors.Contains(obj.BaseId) && marked)
                 result.Add((obj.Position, name, 0));
