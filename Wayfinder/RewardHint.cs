@@ -134,8 +134,33 @@ internal sealed class RewardHint
         return result;
     }
 
+    // The biggest item-level gain over what is worn, among items the current class can equip now.
+    internal (string Name, int From, int To)? BestUpgrade(IPlayerCharacter player, IEnumerable<uint> ids)
+    {
+        var abbreviation = player.ClassJob.ValueNullable?.Abbreviation.ExtractText() ?? "";
+        var equipped = EquippedLevels();
+        (string, int, int)? best = null;
+        var bestGain = 0;
+        foreach (var id in ids)
+        {
+            if (!items.TryGetRow(id, out var item))
+                continue;
+            var slot = item.EquipSlotCategory.RowId;
+            if (slot == 0 || item.LevelEquip > player.Level || !UsableBy(item.ClassJobCategory.RowId, abbreviation))
+                continue;
+            var level = (int)item.LevelItem.RowId;
+            var current = equipped.TryGetValue(slot, out var worn) ? worn : 0;
+            if (level - current > bestGain)
+            {
+                bestGain = level - current;
+                best = (item.Name.ExtractText(), current, level);
+            }
+        }
+        return best;
+    }
+
     // ClassJobCategory has one boolean column per class/job abbreviation (THM, BLM, ...).
-    private bool UsableBy(uint category, string abbreviation)
+    internal bool UsableBy(uint category, string abbreviation)
     {
         if (abbreviation.Length == 0 || !categories.TryGetRow(category, out var row))
             return false;

@@ -17,6 +17,7 @@ public enum WayMode
     Party = 5,
     Npc = 6,
     AllQuests = 7,
+    QuestGiver = 8,
 }
 
 [Serializable]
@@ -53,6 +54,7 @@ public sealed class Configuration : IPluginConfiguration
     public float PanelX = 0.5f;
     public float PanelY = 0.075f;
     public bool RewardHint;
+    public ushort GiverQuest;
     // Spots of a multi-spot quest step already walked to, so a plugin reload does not send the player back.
     public ushort VisitedQuest;
     public byte VisitedSequence;

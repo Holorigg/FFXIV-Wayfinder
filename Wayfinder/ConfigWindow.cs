@@ -48,6 +48,10 @@ internal sealed class ConfigWindow : Window
             Tip($"ui.place-tip.{kind}");
         }
 
+        if (ImGui.Button(Loc.T("ui.sides-button"), new System.Numerics.Vector2(268, 0)))
+            plugin.ToggleSides();
+        Tip("ui.sides-tip");
+
         ImGui.Separator();
         ImGui.TextUnformatted(Loc.T("ui.lead"));
         Mode(WayMode.Flag, "ui.mode.flag");
@@ -130,9 +134,16 @@ internal sealed class ConfigWindow : Window
         }
         if (npcQuery.Trim().Length >= 2 && npcResults.Count == 0)
             ImGui.TextDisabled(Loc.T("ui.npc-none"));
+        var level = plugin.PlayerLevel;
+        var loaded = plugin.LoadedNpcNames();
         foreach (var npc in npcResults)
         {
             var label = npc.Title.Length > 0 ? $"{npc.Name} <{npc.Title}> — {npc.Zone}" : $"{npc.Name} — {npc.Zone}";
+            label += $" ({npc.MapX:0.0}, {npc.MapY:0.0})";
+            if (npc.Territory == plugin.Here && loaded.Contains(npc.Name))
+                label = Loc.T("ui.npc-near") + label;
+            if (NpcIndex.BestQuest(npc, level) is { } quest)
+                label += Loc.T("ui.npc-gives", quest);
             if (ImGui.Selectable($"{label}##npc{npc.Level}", config.NpcLevel == npc.Level))
                 plugin.GoToNpc(npc);
         }

@@ -62,6 +62,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Attunement attunement;
     private readonly NpcIndex npcs;
     private readonly RewardHint rewardHint;
+    private readonly QuestCatalog catalog;
+    private readonly NearbyQuestsWindow sidesWindow;
     private readonly AetherCurrents currents;
     private readonly MinimapOverlay minimap;
 
@@ -111,12 +113,16 @@ public sealed class Plugin : IDalamudPlugin
         attunement = new Attunement(DataManager);
         npcs = new NpcIndex(DataManager);
         rewardHint = new RewardHint(DataManager, config);
+        catalog = new QuestCatalog(DataManager);
+        Log.Information("[Wayfinder] {Quests} side quests in the catalog", catalog.Count);
         PathRenderer.Settings = config;
         Log.Information("[Wayfinder] {Attune} attunement points, {Npcs} NPC spots indexed", attunement.Count, npcs.Count);
         Log.Information("[Wayfinder] landmarks: {List}", string.Join(", ", Enum.GetValues<LandmarkKind>().Select(k => $"{k} {landmarks.Count(k)}")));
         Log.Information("[Wayfinder] {Count} aethernet shards, {Currents} aether currents, {Aetherytes} aetheryte positions loaded", aethernet.Count, currents.Count, teleports.PositionCount);
         configWindow = new ConfigWindow(config, SaveConfig, this);
         windows.AddWindow(configWindow);
+        sidesWindow = new NearbyQuestsWindow(this);
+        windows.AddWindow(sidesWindow);
         renderer = new PathRenderer(config);
         minimap = new MinimapOverlay(config);
 
@@ -213,6 +219,9 @@ public sealed class Plugin : IDalamudPlugin
             case "attune":
                 SetPlace(LandmarkKind.Unattuned);
                 return;
+            case "sides" or "side":
+                sidesWindow.Toggle();
+                return;
             case "all":
                 SetMode(WayMode.AllQuests, config.QuestId);
                 return;
@@ -304,6 +313,8 @@ public sealed class Plugin : IDalamudPlugin
             return Loc.T("chat.follow", config.FollowName);
         if (config.Mode == WayMode.Npc)
             return Loc.T("chat.npc", config.NpcLabel);
+        if (config.Mode == WayMode.QuestGiver)
+            return Loc.T("chat.giver", catalog.Find(config.GiverQuest)?.Name ?? "");
         if (config.Mode == WayMode.AllQuests)
             return Loc.T("chat.all");
         if (config.QuestId == 0)
@@ -564,6 +575,25 @@ public sealed class Plugin : IDalamudPlugin
         if (config.Mode == WayMode.Party)
             return PartyGoal();
 
+        if (config.Mode == WayMode.QuestGiver)
+        {
+            if (catalog.Find(config.GiverQuest) is not { } offer)
+            {
+                status = Loc.T("status.no-npc");
+                return null;
+            }
+            // Picked up: from now on follow the quest itself.
+            if (questTargets.List().Exists(e => e.QuestId == offer.Id))
+            {
+                SetMode(WayMode.Quest, offer.Id);
+                return null;
+            }
+            var spot = offer.Position;
+            if (offer.Territory == ClientState.TerritoryType && offer.Issuer.Length > 0 && LiveNpc(offer.Issuer, spot) is { } live)
+                spot = live;
+            return new Goal(offer.Territory, new Vector2(spot.X, spot.Z), spot, Loc.T("pick-up", offer.Name), false);
+        }
+
         if (config.Mode == WayMode.Npc)
         {
             if (npcs.ByLevel(config.NpcLevel) is not { } npc)
@@ -571,6 +601,10 @@ public sealed class Plugin : IDalamudPlugin
                 status = Loc.T("status.no-npc");
                 return null;
             }
+            // The stored spot is one of several the story moves this NPC between; once they are loaded in this
+            // zone, their real position wins.
+            if (npc.Territory == ClientState.TerritoryType && LiveNpc(npc.Name, npc.Position) is { } live)
+                return new Goal(npc.Territory, new Vector2(live.X, live.Z), live, npc.Name, false);
             return new Goal(npc.Territory, new Vector2(npc.Position.X, npc.Position.Z), npc.Position, npc.Name, false);
         }
 
@@ -803,7 +837,70 @@ public sealed class Plugin : IDalamudPlugin
 
     // ---------- NPC search ----------
 
-    internal List<NpcPlace> SearchNpcs(string text) => npcs.Search(text, ClientState.TerritoryType, links, 30);
+    internal List<NpcPlace> SearchNpcs(string text) => npcs.Search(text, ClientState.TerritoryType, links, 30, LoadedNpcNames());
+
+    // Names of the NPCs loaded around the player right now.
+    internal HashSet<string> LoadedNpcNames()
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var obj in ObjectTable)
+        {
+            if (obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc)
+                names.Add(obj.Name.TextValue);
+        }
+        return names;
+    }
+
+    // The loaded NPC of that name nearest to the stored spot.
+    private Vector3? LiveNpc(string name, Vector3 near)
+    {
+        Vector3? best = null;
+        foreach (var obj in ObjectTable)
+        {
+            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc
+                || !string.Equals(obj.Name.TextValue, name, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (best is not { } b || Vector3.Distance(obj.Position, near) < Vector3.Distance(b, near))
+                best = obj.Position;
+        }
+        return best;
+    }
+
+    internal int PlayerLevel => ObjectTable.LocalPlayer?.Level ?? 1;
+
+    // ---------- quests nearby ----------
+
+    internal sealed record NearbyQuest(CatalogQuest Quest, int Hops, float Distance, int Experience, uint Gil, (string Name, int From, int To)? Upgrade);
+
+    // Side quests the player can pick up in this zone and up to `reach` zone transitions away.
+    internal List<NearbyQuest> NearbyQuests(int reach)
+    {
+        var player = ObjectTable.LocalPlayer;
+        if (player == null)
+            return [];
+        var hops = links.DistancesFrom(ClientState.TerritoryType, reach);
+        var result = new List<NearbyQuest>();
+        foreach (var quest in catalog.Available(player, hops.Keys.ToHashSet(), rewardHint))
+        {
+            var h = hops[quest.Territory];
+            var distance = h == 0 ? Vector3.Distance(player.Position, quest.Position) : 0f;
+            var upgrade = rewardHint.BestUpgrade(player, quest.Items.Concat(quest.Choice).Select(i => i.Item));
+            result.Add(new NearbyQuest(quest, h, distance, catalog.Experience(quest), quest.Gil, upgrade));
+        }
+        return result;
+    }
+
+    internal void GoToQuestGiver(CatalogQuest quest)
+    {
+        config.GiverQuest = quest.Id;
+        SetMode(WayMode.QuestGiver, config.QuestId);
+    }
+
+    internal string ItemName(uint id) => catalog.ItemName(id);
+
+    internal void ToggleSides() => sidesWindow.Toggle();
+
+    internal uint Here => ClientState.TerritoryType;
 
     internal void GoToNpc(NpcPlace npc)
     {
