@@ -8,6 +8,7 @@
     "Description": "Draws the route on the ground to the map flag, the current quest step, the nearest service (market board, mender, summoning bell, inn, mail, hunt board, chocobo porter, class guild) or the zone's aether currents. Routes across zone exits, ferries, airships and lifts, with city aethernet and teleport suggestions, travel time, a mount hint, flight paths and an optional minimap/map overlay. Only draws; never moves the character. Requires vnavmesh (https://puni.sh/api/repository/veyn). Open with /way.",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/Holorigg/FFXIV-Wayfinder",
+    "IconUrl": "https://raw.githubusercontent.com/Holorigg/FFXIV-Wayfinder/main/images/icon.png",
     "Tags": [
       "navigation",
       "gps",
