@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>0.8.8.0</Version>
+    <Version>0.8.9.0</Version>
     <Author>holorigg</Author>
     <Name>Wayfinder</Name>
     <Punchline>GPS-style path on the ground to your map flag, quest objective or the nearest service.</Punchline>
     <Description>Draws the walking route on the ground to the map flag or to the current step of a quest, across zone exits, with city aethernet and teleport suggestions. Only draws; never moves the character. Requires vnavmesh. Open with /way.</Description>
     <Tags>navigation;gps;path;vnavmesh</Tags>
     <RepoUrl>https://github.com/Holorigg/FFXIV-Wayfinder</RepoUrl>
+      <IconUrl>https://raw.githubusercontent.com/Holorigg/FFXIV-Wayfinder/main/images/icon.png</IconUrl>
   </PropertyGroup>
 </Project>

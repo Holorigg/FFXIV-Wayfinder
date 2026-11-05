@@ -731,6 +731,14 @@ public sealed class Plugin : IDalamudPlugin
         var next = locations[best];
         var label = q.Accepted ? q.Name : Loc.T("pick-up", q.Name);
 
+        // The step is inside a duty: lead to its entrance out in the world, then the Duty Finder takes over.
+        if (next.Territory != here && questTargets.IsDuty(next.Territory) && questTargets.DutyEntrance(q) is { } entrance)
+        {
+            Trace($"quest {q.QuestId}: step inside duty {next.Territory}, entrance {entrance.Territory} {entrance.Position.X:0},{entrance.Position.Z:0}", "duty");
+            return new Goal(entrance.Territory, new Vector2(entrance.Position.X, entrance.Position.Z), entrance.Position,
+                Loc.T("duty-entrance", q.Name), false);
+        }
+
         // A search area ("speak to three people", "slay a gall gnat", "obtain brownie brushes"): once nearby, lead
         // to what the open objectives name or mark, as the game shows it right now.
         if (next.Area && next.Territory == here
@@ -1316,7 +1324,12 @@ public sealed class Plugin : IDalamudPlugin
             if (hops.Count == 0)
             {
                 ClearPath();
-                status = Loc.T("status.no-route");
+                // Dungeons and trials (the Navel for "Lord of Crags") have no way in on foot: they are entered from
+                // the Duty Finder anywhere.
+                status = DataManager.GetExcelSheet<Lumina.Excel.Sheets.TerritoryType>().TryGetRow(destination.Territory, out var target)
+                         && target.ContentFinderCondition.RowId != 0 && target.ContentFinderCondition.ValueNullable is { } duty
+                    ? Loc.T("status.duty", duty.Name.ExtractText())
+                    : Loc.T("status.no-route");
                 Trace($"no zone route from {ClientState.TerritoryType} to {destination.Territory}");
                 return;
             }

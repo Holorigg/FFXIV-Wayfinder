@@ -90,6 +90,35 @@ internal sealed class QuestTargets
         return false;
     }
 
+    // A step that takes place inside a duty (Lord of Crags: "Confront Titan in the Navel") has its spot in the duty's
+    // own territory, which cannot be walked to. The way in is the "Entrance" object out in the world, and the quest's
+    // previous step sits there (Lord of Crags step 1 is 3 yalms from the Navel's entrance in Upper La Noscea).
+    public unsafe QuestLocation? DutyEntrance(QuestEntry quest)
+    {
+        if (!quest.Accepted || !quests.TryGetRow(QuestRowOffset + quest.QuestId, out var row))
+            return null;
+        var sequence = QuestManager.GetQuestSequence(quest.QuestId);
+        QuestLocation? best = null;
+        var bestSequence = -1;
+        foreach (var todo in row.TodoParams)
+        {
+            if (todo.ToDoCompleteSeq >= sequence || todo.ToDoCompleteSeq <= bestSequence)
+                continue;
+            foreach (var level in todo.ToDoLocation)
+            {
+                if (level.RowId == 0 || level.ValueNullable is not { } value || value.Territory.RowId == 0 || IsDuty(value.Territory.RowId))
+                    continue;
+                best = new QuestLocation(value.Territory.RowId, new Vector3(value.X, value.Y, value.Z), false, 0, value.Type is 8 or 45 ? value.Object.RowId : 0);
+                bestSequence = todo.ToDoCompleteSeq;
+                break;
+            }
+        }
+        return best;
+    }
+
+    public bool IsDuty(uint territory) =>
+        data.GetExcelSheet<TerritoryType>().TryGetRow(territory, out var zone) && zone.ContentFinderCondition.RowId != 0;
+
     // The quest's work variables as hex, for the log: multi-spot steps keep their progress in them.
     public static unsafe string Variables(ushort questId)
     {
