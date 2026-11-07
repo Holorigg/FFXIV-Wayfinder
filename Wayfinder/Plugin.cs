@@ -1035,6 +1035,9 @@ public sealed class Plugin : IDalamudPlugin
     // Set when the last path ends in a jump no one can walk: a long segment with a big height change, which is how
     // vnavmesh finishes a route to a target it cannot reach.
     private volatile bool pathUnreachable;
+    // A new path not yet checked for crossings over water, which keep their height (the ferry to the Isles of Umbra):
+    // checked on the game thread, where the navmesh can be asked.
+    private volatile List<Vector3>? pathToCheck;
     private ZoneLinks.Lift? detour;
     private uint detourZone;
     private float detourHeight;
@@ -1052,6 +1055,27 @@ public sealed class Plugin : IDalamudPlugin
         return false;
     }
 
+    // A long straight segment with no navmesh under its middle part: the "path" goes across water to an island.
+    private bool CrossesGap(List<Vector3> route)
+    {
+        for (var i = 1; i < route.Count; i++)
+        {
+            var a = route[i - 1];
+            var b = route[i];
+            var flat = new Vector2(b.X - a.X, b.Z - a.Z).Length();
+            if (flat < 40f)
+                continue;
+            var samples = Math.Min(12, (int)(flat / 15f));
+            for (var s = 1; s < samples; s++)
+            {
+                var p = Vector3.Lerp(a, b, s / (float)samples);
+                if (nearestPoint.InvokeFunc(p, 4f, 8f) is not { } hit || new Vector2(hit.X - p.X, hit.Z - p.Z).Length() > 4f)
+                    return true;
+            }
+        }
+        return false;
+    }
+
     // A lift at the player's level, kept until they have ridden it (their height changed) or left the zone, so
     // the route does not flip back once the path to the lift itself looks fine.
     private ZoneLinks.Lift? LiftDetour(Vector3 from)
@@ -1059,10 +1083,26 @@ public sealed class Plugin : IDalamudPlugin
         var here = ClientState.TerritoryType;
         if (detour is { } kept)
         {
-            if (detourZone == here && MathF.Abs(from.Y - detourHeight) < 8f)
+            // Ridden once the height changed (a lift) or the player was carried far from it (a ferry keeps the height).
+            if (detourZone == here && MathF.Abs(from.Y - detourHeight) < 8f && Vector3.Distance(from, kept.Npc) < 100f)
                 return kept;
             detour = null;
             pathUnreachable = false;
+            path = [];
+            lastTo = null;
+        }
+        if (pathToCheck is { } fresh)
+        {
+            pathToCheck = null;
+            try
+            {
+                if (!pathUnreachable && !pathFlying && CrossesGap(fresh))
+                    pathUnreachable = true;
+            }
+            catch (Exception)
+            {
+                // vnavmesh not answering: keep the path as it is.
+            }
         }
         if (!pathUnreachable)
             return null;
@@ -1458,6 +1498,7 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     path = result;
                     pathUnreachable = Unreachable(result);
+                    pathToCheck = result;
                     Trace($"path found: {result.Count} points, {string.Join(" ", result.Where((p, i) => i % Math.Max(1, result.Count / 25) == 0).Select(p => $"({p.X:0},{p.Y:0},{p.Z:0})"))}", "path");
                 }
                 else
